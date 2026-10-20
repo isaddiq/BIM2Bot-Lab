@@ -23,7 +23,7 @@
       bundled: false
     }
   ];
-  const SOURCE_REPO_URL = "https://github.com/isaddiq/IFC_Web_Viewer";
+  const SOURCE_REPO_URL = "https://github.com/isaddiq/BIM2Bot-Lab";
   const AUTHOR_URL = "https://isaddiq.github.io/";
   const SLAB_CLASSES = ["IfcSlab", "IfcSlabStandardCase", "IfcSlabElementedCase", "IfcCovering", "IfcRoof"];
   const uid = () => Math.random().toString(36).slice(2, 9);

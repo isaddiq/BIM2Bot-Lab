@@ -27,7 +27,7 @@ const SAMPLES = [
     bundled: false,
   },
 ];
-const SOURCE_REPO_URL = 'https://github.com/isaddiq/IFC_Web_Viewer';
+const SOURCE_REPO_URL = 'https://github.com/isaddiq/BIM2Bot-Lab';
 const AUTHOR_URL = 'https://isaddiq.github.io/';
 const VISITOR_STATS_URL = 'https://s01.flagcounter.com/more/2uk';
 
