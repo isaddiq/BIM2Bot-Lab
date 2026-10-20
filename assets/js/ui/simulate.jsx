@@ -1,0 +1,431 @@
+/** Simulate workspace (Version 3): scenario set-up, playback and results. */
+
+const SIM_SPEEDS = [1, 2, 5, 10, 30];
+
+function fmtClock(t) {
+  const s = Math.floor(t);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+function fmtSec(t) {
+  if (t == null) return '—';
+  return t >= 90 ? `${(t / 60).toFixed(1)} min` : `${t.toFixed(1)} s`;
+}
+
+/**
+ * Owns the running simulation, its 3D agents and heatmap overlays.
+ * The engine advances on the viewer's frame callback while running.
+ */
+function useSimulation({ viewerRef, model, building, navMap, theme, levelId, active }) {
+  const simRef = useRef(null);
+  const agentsRef = useRef(null);
+  const unsubRef = useRef(null);
+  const statusRef = useRef('idle');
+  const speedRef = useRef(5);
+  const heatRef = useRef(true);
+  const lastUi = useRef(0);
+  const lastHeat = useRef(0);
+  const [status, setStatusState] = useState('idle');
+  const [snapshot, setSnapshot] = useState(null);
+  const [speed, setSpeedState] = useState(5);
+  const [showHeat, setShowHeatState] = useState(true);
+
+  const setStatus = (s) => { statusRef.current = s; setStatusState(s); };
+  const setSpeed = (s) => { speedRef.current = s; setSpeedState(s); };
+
+  const drawHeat = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    if (simRef.current && heatRef.current) v.setOverlay('sim-heat', buildHeatOverlay(simRef.current, { levelId }));
+    else v.removeOverlay('sim-heat');
+  };
+  const setShowHeat = (on) => { heatRef.current = on; setShowHeatState(on); drawHeat(); };
+
+  const stopLoop = () => { if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; } };
+  const startLoop = () => {
+    stopLoop();
+    const v = viewerRef.current;
+    if (!v || !simRef.current) return;
+    unsubRef.current = v.onFrame((dt) => {
+      const sim = simRef.current;
+      if (!sim) return;
+      if (statusRef.current === 'running') sim.step(dt * speedRef.current);
+      agentsRef.current && agentsRef.current.update();
+      const now = performance.now();
+      if (now - lastUi.current > 250) { lastUi.current = now; setSnapshot(sim.summary()); }
+      if (heatRef.current && now - lastHeat.current > 1500) { lastHeat.current = now; drawHeat(); }
+      if (sim.done && statusRef.current === 'running') {
+        setStatus('done');
+        setSnapshot(sim.summary());
+        drawHeat();
+        stopLoop();
+      }
+    });
+  };
+
+  const detachOverlays = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    v.removeOverlay('sim-agents');
+    v.removeOverlay('sim-heat');
+  };
+  const attachOverlays = () => {
+    const v = viewerRef.current;
+    if (!v || !simRef.current) return;
+    agentsRef.current = buildAgentsOverlay(simRef.current, { theme });
+    v.setOverlay('sim-agents', agentsRef.current.group);
+    drawHeat();
+  };
+
+  const start = (scenario) => {
+    stopLoop();
+    detachOverlays();
+    simRef.current = createSimulation({ model, building, navMap }, scenario);
+    attachOverlays();
+    setSnapshot(simRef.current.summary());
+    setStatus(simRef.current.done ? 'done' : 'running');
+    startLoop();
+    // Frame the rooms the fleet works in.
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    simRef.current.rooms.forEach(rm => {
+      const s = building.spaces.get(rm.id);
+      if (!s) return;
+      for (let a = 0; a < 3; a++) { min[a] = Math.min(min[a], s.bbox.min[a]); max[a] = Math.max(max[a], s.bbox.max[a]); }
+    });
+    if (Number.isFinite(min[0])) viewerRef.current?.frameModelBox({ min, max });
+    return simRef.current;
+  };
+  const pause = () => { setStatus('paused'); stopLoop(); };
+  const resume = () => { if (!simRef.current || simRef.current.done) return; setStatus('running'); startLoop(); };
+  const runToEnd = () => {
+    const sim = simRef.current;
+    if (!sim) return;
+    stopLoop();
+    sim.runToEnd();
+    agentsRef.current && agentsRef.current.update();
+    setSnapshot(sim.summary());
+    setStatus('done');
+    drawHeat();
+    viewerRef.current?.invalidate();
+  };
+  const reset = () => {
+    stopLoop();
+    detachOverlays();
+    simRef.current = null;
+    agentsRef.current = null;
+    setSnapshot(null);
+    setStatus('idle');
+  };
+
+  // Leaving the workspace pauses and hides the agents; coming back shows them again.
+  useEffect(() => {
+    if (!simRef.current) return;
+    if (active) {
+      attachOverlays();
+      if (statusRef.current === 'running') startLoop();
+    } else {
+      stopLoop();
+      if (statusRef.current === 'running') setStatus('paused');
+      detachOverlays();
+    }
+  }, [active]);
+  useEffect(() => { if (simRef.current && active) attachOverlays(); }, [theme]);
+  useEffect(() => { if (simRef.current && active) drawHeat(); }, [levelId]);
+  useEffect(() => () => { stopLoop(); }, []);
+  useEffect(() => { reset(); }, [model, navMap]);
+
+  return { sim: simRef, status, snapshot, speed, setSpeed, showHeat, setShowHeat, start, pause, resume, runToEnd, reset };
+}
+
+function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFrameAt, missions = [], removeMission, clearMissions, pendingMission, pickingMission, onPickMission, theme, simRequest, onRequestHandled }) {
+  const [sc, setSc] = useState(() => ({
+    robots: 4,
+    tasksPerRobot: 4,
+    humans: 4,
+    robotPreset: 'wheeled',
+    robotSpeed: 0.8,
+    liftPolicy: 'fcfs',
+    liftCapacity: 1,
+    stairsAsLifts: nav ? nav.stairsAsLifts : false,
+    seed: 7,
+    taskMode: 'random',
+    robot: null, // a profile handed over from Navigate; null means use robotPreset
+  }));
+  const set = (patch) => setSc(s => ({ ...s, ...patch }));
+
+  const scenarioFrom = (cfg, missionList) => {
+    const preset = ROBOT_PRESETS.find(p => p.id === cfg.robotPreset) || ROBOT_PRESETS[0];
+    return {
+      robots: cfg.robots,
+      tasksPerRobot: cfg.tasksPerRobot,
+      humans: cfg.humans,
+      robot: cfg.robot ? { ...cfg.robot } : { ...preset },
+      robotSpeed: cfg.robotSpeed,
+      liftPolicy: cfg.liftPolicy,
+      liftCapacity: cfg.liftCapacity,
+      stairsAsLifts: cfg.stairsAsLifts,
+      seed: cfg.seed,
+      missions: cfg.taskMode === 'missions' ? missionList : [],
+      blocked: nav ? nav.blocked : new Set(),
+      obstacles: nav ? nav.obstacles : [],
+    };
+  };
+
+  // "Simulate this route" from Navigate: one robot, one trip along the chosen route, no people.
+  // Runs once the occupancy grids exist; afterwards the scenario stays editable.
+  useEffect(() => {
+    if (!simRequest || !building || !navMap) return;
+    const next = {
+      ...sc,
+      taskMode: 'missions',
+      tasksPerRobot: 1,
+      humans: 0,
+      robot: simRequest.robot || null,
+      stairsAsLifts: simRequest.stairsAsLifts != null ? simRequest.stairsAsLifts : sc.stairsAsLifts,
+    };
+    setSc(next);
+    simApi.setSpeed(1); // one route: play it in real time so the trip is visible
+    simApi.start(scenarioFrom(next, simRequest.missions));
+    onRequestHandled && onRequestHandled();
+  }, [simRequest, building, navMap]);
+
+  if (!model) {
+    return <aside className="side left-side nav-side"><div className="side-body"><EmptyState icon={Icons.Robot} title="No model open">Open an IFC model with rooms to simulate robots moving through it.</EmptyState></div></aside>;
+  }
+  if (!building || !navMap) {
+    return <aside className="side left-side nav-side"><div className="side-body"><EmptyState icon={Icons.Robot} title="Preparing the simulation">Building the navigation graph and occupancy grids…</EmptyState></div></aside>;
+  }
+
+  const lifts = [...building.verticals.values()].filter(v => v.kind === 'lift').length;
+  const stairs = [...building.verticals.values()].filter(v => v.kind === 'stair').length;
+  const preset = ROBOT_PRESETS.find(p => p.id === sc.robotPreset) || ROBOT_PRESETS[0];
+  const whatIf = (nav ? nav.blocked.size : 0) + (nav ? nav.obstacles.length : 0);
+  const { status, snapshot: snap } = simApi;
+  const running = status === 'running';
+
+  const run = () => simApi.start(scenarioFrom(sc, missions));
+
+  const exportResults = () => {
+    const sim = simApi.sim.current;
+    if (!sim) return;
+    const { blocked, obstacles, robot, ...scenario } = sim.scenario;
+    download(JSON.stringify({ model: model.fileName, scenario: { ...scenario, robot, blockedDoors: [...(blocked || [])], obstacles }, summary: sim.summary(), events: sim.events }, null, 2), 'bim2bot-simulation.json', 'application/json');
+  };
+
+  const t = snap ? snap.totals : null;
+
+  return (
+    <aside className="side left-side nav-side" aria-label="Simulation">
+      <div className="side-body">
+        <div className="side-scroll nav-scroll">
+          <div className="nav-intro">
+            <h2>Simulation</h2>
+            <p>Robots run delivery tasks between rooms on the occupancy grid while people move through the building. Lifts are scheduled, congestion is measured per cell, and every close encounter is logged.</p>
+          </div>
+
+          <div className="nav-section">
+            <h3><Icons.Robot size={16} /> Scenario</h3>
+            <div className="field">
+              <span>Tasks</span>
+              <div className="seg seg-wide" role="group" aria-label="Task mode">
+                <button type="button" aria-pressed={sc.taskMode === 'random'} onClick={() => set({ taskMode: 'random' })}>Random deliveries</button>
+                <button type="button" aria-pressed={sc.taskMode === 'missions'} onClick={() => set({ taskMode: 'missions' })}>Custom missions</button>
+              </div>
+            </div>
+            {sc.taskMode === 'missions' && (
+              <div className="missions">
+                {missions.length === 0 && !pendingMission && <p className="pane-note">No missions yet. Add one by clicking a start and then a goal on the floor plan or the 3D floor grid. Each robot shuttles between its mission's points.</p>}
+                {missions.map((m, i) => (
+                  <div key={m.id} className="list-row">
+                    <span className="robot-dot" style={{ background: (theme === 'dark' ? ROBOT_COLORS_DARK : ROBOT_COLORS)[i % 8] }} />
+                    <div className="list-main">Robot {i + 1}: {levelLabel(building, m.start)} to {levelLabel(building, m.goal)}</div>
+                    <IconButton icon={Icons.X} label={`Remove mission ${i + 1}`} size={13} className="sm" onClick={() => removeMission(m.id)} />
+                  </div>
+                ))}
+                <div className="sim-actions">
+                  <button type="button" className="btn btn-sm" data-active={pickingMission} disabled={missions.length >= 8} onClick={onPickMission}>
+                    <Icons.Plus size={14} /> {pickingMission ? (pendingMission ? 'Click the goal' : 'Click the start') : 'Add a mission on the map'}
+                  </button>
+                  {missions.length > 0 && <button type="button" className="btn btn-ghost btn-sm" onClick={clearMissions}>Clear missions</button>}
+                </div>
+              </div>
+            )}
+            <div className="field-grid">
+              <label className="field"><span>Robots</span><input type="number" min="1" max="8" value={sc.taskMode === 'missions' ? missions.length : sc.robots} disabled={sc.taskMode === 'missions'} onChange={e => set({ robots: clampInt(e.target.value, 1, 8) })} /></label>
+              <label className="field"><span>{sc.taskMode === 'missions' ? 'Trips per robot' : 'Tasks per robot'}</span><input type="number" min="1" max="20" value={sc.tasksPerRobot} onChange={e => set({ tasksPerRobot: clampInt(e.target.value, 1, 20) })} /></label>
+              <label className="field"><span>People</span><input type="number" min="0" max="30" value={sc.humans} onChange={e => set({ humans: clampInt(e.target.value, 0, 30) })} /></label>
+              <label className="field"><span>Robot speed (m/s)</span><input type="number" min="0.2" max="2" step="0.1" value={sc.robotSpeed} onChange={e => set({ robotSpeed: Math.min(2, Math.max(0.2, Number(e.target.value) || 0.8)) })} /></label>
+            </div>
+            <label className="field">
+              <span>Robot type</span>
+              <select value={sc.robot ? 'navigate' : sc.robotPreset} onChange={e => (e.target.value === 'navigate' ? null : set({ robotPreset: e.target.value, robot: null }))}>
+                {sc.robot && <option value="navigate">{sc.robot.name} ({sc.robot.width} m), from Navigate</option>}
+                {ROBOT_PRESETS.map(p => <option key={p.id} value={p.id}>{p.name} ({p.width} m{p.canUseStairs ? ', stairs' : ''}{p.canUseLifts ? ', lifts' : ''})</option>)}
+              </select>
+            </label>
+            <div className="field-grid">
+              <label className="field">
+                <span>Lift scheduling</span>
+                <select value={sc.liftPolicy} onChange={e => set({ liftPolicy: e.target.value })}>
+                  <option value="fcfs">First come, first served</option>
+                  <option value="nearest">Nearest car, collective</option>
+                </select>
+              </label>
+              <label className="field"><span>Lift capacity</span><input type="number" min="1" max="6" value={sc.liftCapacity} onChange={e => set({ liftCapacity: clampInt(e.target.value, 1, 6) })} /></label>
+            </div>
+            {stairs > 0 && (
+              <label className="check-field whatif"><input type="checkbox" checked={sc.stairsAsLifts} onChange={e => set({ stairsAsLifts: e.target.checked })} /> What-if: put a lift in each stair core</label>
+            )}
+            <p className="pane-note">
+              The model has {plural(lifts, 'lift')} and {plural(stairs, 'stair')}. {lifts === 0 && !sc.stairsAsLifts && !preset.canUseStairs ? 'Without lifts this robot stays on its start level.' : ''}
+              {whatIf > 0 ? ` ${plural(whatIf, 'what-if change')} from Navigate (blocked doors and obstacles) apply.` : ''}
+            </p>
+            <div className="field-grid seed-row">
+              <label className="field"><span>Random seed</span><input type="number" value={sc.seed} onChange={e => set({ seed: clampInt(e.target.value, 0, 1e9) })} /></label>
+              <button type="button" className="btn btn-sm" onClick={() => set({ seed: Math.floor(Math.random() * 1e6) })}><Icons.Refresh size={14} /> New seed</button>
+            </div>
+            <div className="sim-actions">
+              <button type="button" className="btn btn-primary" onClick={run} disabled={sc.taskMode === 'missions' && missions.length === 0}><Icons.Play size={14} /> {status === 'idle' ? 'Start simulation' : 'Restart'}</button>
+              {status !== 'idle' && (running
+                ? <button type="button" className="btn" onClick={simApi.pause}>Pause</button>
+                : <button type="button" className="btn" onClick={simApi.resume} disabled={status === 'done'}>Resume</button>)}
+              {status !== 'idle' && status !== 'done' && <button type="button" className="btn btn-ghost" onClick={simApi.runToEnd}>Run to end</button>}
+            </div>
+          </div>
+
+          {snap && (
+            <>
+              <div className="nav-section">
+                <div className="sim-clock">
+                  <span className="mono">{fmtClock(snap.time)}</span>
+                  <span className="sim-status" data-status={status}>{status === 'done' ? (snap.timedOut ? 'Stopped at the time limit' : 'Finished') : status === 'running' ? 'Running' : 'Paused'}</span>
+                  <div className="seg" role="group" aria-label="Playback speed">
+                    {SIM_SPEEDS.map(s => <button key={s} type="button" aria-pressed={simApi.speed === s} onClick={() => simApi.setSpeed(s)}>{s}×</button>)}
+                  </div>
+                </div>
+                <div className="meter">
+                  <div className="meter-label"><span>Tasks completed</span><span className="mono">{t.tasksDone} / {t.tasksPlanned}</span></div>
+                  <div className="meter-track"><div style={{ width: `${t.tasksPlanned ? (t.tasksDone / t.tasksPlanned) * 100 : 0}%` }} /></div>
+                </div>
+                <div className="kpi-grid">
+                  <Kpi k="Makespan" v={fmtSec(t.makespan)} />
+                  <Kpi k="Throughput" v={`${t.throughputPerHour.toFixed(0)} /h`} />
+                  <Kpi k="Mean task time" v={fmtSec(t.meanTaskTime)} />
+                  <Kpi k="Distance driven" v={`${t.distance.toFixed(0)} m`} />
+                  <Kpi k="Congestion wait" v={fmtSec(t.congestionWait)} />
+                  <Kpi k="Lift wait" v={fmtSec(t.liftWait)} />
+                  <Kpi k="Encounters with people" v={t.encounters} />
+                  <Kpi k="Near misses" v={t.nearMisses} tone={t.nearMisses ? 'warn' : null} />
+                  <Kpi k="Closest approach" v={t.minSeparation != null ? `${t.minSeparation.toFixed(2)} m` : '—'} />
+                  <Kpi k="Deadlocks resolved" v={t.deadlocks} tone={t.deadlocks ? 'warn' : null} />
+                </div>
+                {t.unreachable > 0 && <p className="pane-note warn-note">{plural(t.unreachable, 'task')} had no reachable destination and were skipped.</p>}
+                <div className="toggle-row">
+                  <label className="check-field"><input type="checkbox" checked={simApi.showHeat} onChange={e => simApi.setShowHeat(e.target.checked)} /> Congestion heatmap</label>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={exportResults}><Icons.Download size={14} /> Export results</button>
+                </div>
+              </div>
+
+              <div className="nav-section">
+                <h3><Icons.Robot size={16} /> Fleet</h3>
+                <table className="dtbl compact">
+                  <thead><tr><th>Robot</th><th>State</th><th className="num">Tasks</th><th className="num">Waited</th></tr></thead>
+                  <tbody>
+                    {snap.robots.map(r => (
+                      <tr key={r.id} title={`Driving ${fmtSec(r.moveT)}, congestion ${fmtSec(r.waitT)}, lift wait ${fmtSec(r.liftWaitT)}, riding ${fmtSec(r.rideT)}, stopped for people ${fmtSec(r.stopT)}`}>
+                        <td><span className="robot-dot" style={{ background: (document.documentElement.getAttribute('data-theme') === 'dark' ? ROBOT_COLORS_DARK : ROBOT_COLORS)[r.colorIndex] || r.color }} />{r.name}</td>
+                        <td className="muted">{robotStateLabel(r.state)}</td>
+                        <td className="num mono">{r.tasks}</td>
+                        <td className="num mono">{fmtSec(r.waitT + r.liftWaitT + r.stopT)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {snap.lifts.length > 0 && (
+                <div className="nav-section">
+                  <h3><Icons.Stairs size={16} /> Lifts</h3>
+                  <table className="dtbl compact">
+                    <thead><tr><th>Lift</th><th className="num">Served</th><th className="num">Mean wait</th><th className="num">Busy</th></tr></thead>
+                    <tbody>
+                      {snap.lifts.map(L => (
+                        <tr key={L.id} title={`Max queue ${L.maxQueue}, ${L.trips} trips, now at ${L.level}`} onClick={() => !L.virtual && onSelectIds([L.id])}>
+                          <td className="ellipsis">{L.name}</td>
+                          <td className="num mono">{L.served}</td>
+                          <td className="num mono">{fmtSec(L.meanWait)}</td>
+                          <td className="num mono">{Math.round(L.utilisation * 100)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="nav-section">
+                <h3><Icons.Activity size={16} /> Congestion hotspots</h3>
+                {snap.hotspots.length === 0 ? <p className="pane-note">No robot has had to wait for another robot yet.</p> : (
+                  <ol className="hotspots">
+                    {snap.hotspots.map((h, i) => (
+                      <li key={i}>
+                        <button type="button" onClick={() => onFrameAt(h)}>
+                          <span className="hs-bar"><span style={{ width: `${(h.wait / snap.hotspots[0].wait) * 100}%` }} /></span>
+                          <span className="hs-text">{h.room || 'Circulation'} <span className="muted">· {h.levelName}</span></span>
+                          <span className="mono">{fmtSec(h.wait)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+
+              <SimEvents sim={simApi.sim.current} onFrameAt={onFrameAt} />
+            </>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function SimEvents({ sim, onFrameAt }) {
+  if (!sim) return null;
+  const list = sim.events.filter(e => e.kind === 'near-miss' || e.kind === 'deadlock' || e.kind === 'unreachable').slice(-12).reverse();
+  return (
+    <div className="nav-section">
+      <h3><Icons.Alert size={16} /> Safety and conflict log</h3>
+      {list.length === 0 ? <p className="pane-note">No near misses or deadlocks so far.</p> : (
+        <ul className="event-list">
+          {list.map((e, i) => (
+            <li key={i} data-kind={e.kind}>
+              <button type="button" onClick={() => e.pos && onFrameAt({ x: e.pos[0], y: e.pos[1], z: e.pos[2] })}>
+                <span className="mono muted">{fmtClock(e.t)}</span>
+                <span>{e.text}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function levelLabel(building, pt) {
+  if (!pt) return '—';
+  const l = building.levels.find(x => x.id === pt.levelId);
+  return `${l ? l.name : 'level'} (${pt.x.toFixed(1)}, ${pt.z.toFixed(1)})`;
+}
+
+function Kpi({ k, v, tone }) {
+  return <div className="kpi" data-tone={tone || undefined}><div className="kpi-v mono">{v}</div><div className="kpi-k">{k}</div></div>;
+}
+
+function robotStateLabel(s) {
+  return { moving: 'Driving', 'lift-wait': 'Waiting for lift', riding: 'In lift', stairs: 'On stairs', done: 'Done', idle: 'Idle' }[s] || s;
+}
+
+function clampInt(v, min, max) {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : min;
+}
+
+Object.assign(window, { useSimulation, SimulatePanel });

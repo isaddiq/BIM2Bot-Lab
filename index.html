@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>BIM2Bot Lab</title>
+<meta name="description" content="BIM2Bot Lab is a browser-based construction informatics lab: open an IFC model, explore its semantics, and turn rooms, doors and stairs into a robot navigation graph with traceability back to IFC." />
+<meta name="theme-color" content="#f3f5f7" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0f1a24" media="(prefers-color-scheme: dark)" />
+<meta property="og:title" content="BIM2Bot Lab" />
+<meta property="og:description" content="From IFC model to robot route, entirely in the browser." />
+<link rel="icon" type="image/svg+xml" href="assets/logos/bim2bot-mark.svg" />
+<!-- Preload the IFC runtime so it is in flight before the first file is opened. -->
+<link rel="preload" href="assets/js/ifc-loader-bundle.js?v=web-ifc-0.0.35" as="script" />
+<link rel="preload" href="assets/js/web-ifc-0.0.35/web-ifc.wasm" as="fetch" crossorigin="anonymous" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/css/main.css" />
+<script>
+  // Apply the saved or system theme before first paint.
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem('bim2bot-theme'); } catch (e) {}
+    if (t !== 'light' && t !== 'dark') t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
+<script>
+  const { useCallback, useEffect, useMemo, useReducer, useRef, useState } = React;
+</script>
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+window.THREE = THREE;
+
+// Each compiled script is an IIFE that publishes its API on window; order matters.
+const appScripts = [
+  'assets/js/compiled/core/schema.js',
+  'assets/js/compiled/core/ifcloader.js',
+  'assets/js/compiled/core/building.js',
+  'assets/js/compiled/core/navmap.js',
+  'assets/js/compiled/core/simulation.js',
+  'assets/js/compiled/core/plan.js',
+  'assets/js/compiled/viewer/viewer.js',
+  'assets/js/compiled/viewer/overlays.js',
+  'assets/js/compiled/viewer/viewcube.js',
+  'assets/js/compiled/ui/icons.js',
+  'assets/js/compiled/ui/panels.js',
+  'assets/js/compiled/ui/navigation.js',
+  'assets/js/compiled/ui/simulate.js',
+  'assets/js/compiled/ui/planview.js',
+  'assets/js/compiled/app.js',
+];
+
+try {
+  for (const src of appScripts) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error(`Failed to load ${src}`));
+      document.head.appendChild(script);
+    });
+  }
+} catch (err) {
+  document.getElementById('root').innerHTML = '<div class="boot-error"><h1>BIM2Bot Lab could not start</h1><p>' + err.message + '. Serve the folder over HTTP (for example <code>npx serve .</code>) instead of opening the file directly.</p></div>';
+}
+</script>
+</head>
+<body>
+<main id="root"></main>
+<noscript>BIM2Bot Lab needs JavaScript to read IFC files in your browser.</noscript>
+
+<div id="vc-popover" class="vc-popover" role="dialog" aria-label="Visitor statistics">
+  <div class="vc-popover-top">
+    <span>Visitor statistics</span>
+    <button type="button" class="vc-pop-close" onclick="document.getElementById('vc-popover').classList.remove('vc-open')" aria-label="Close visitor statistics">&times;</button>
+  </div>
+  <a href="http://s01.flagcounter.com/more/2uk" target="_blank" rel="noopener noreferrer" class="vc-flag-link" title="Full analytics">
+    <img src="https://s01.flagcounter.com/count2/2uk/bg_161b22/txt_e6edf3/border_30363d/columns_4/maxflags_20/viewers_0/labels_1/pageviews_1/flags_0/percent_0/" alt="Visitor statistics by country" class="vc-flag-img" loading="lazy" />
+  </a>
+</div>
+</body>
+</html>
