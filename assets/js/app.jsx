@@ -29,7 +29,7 @@ const SAMPLES = [
 ];
 const SOURCE_REPO_URL = 'https://github.com/isaddiq/BIM2Bot-Lab';
 const AUTHOR_URL = 'https://isaddiq.github.io/';
-const VISITOR_STATS_URL = 'https://s01.flagcounter.com/more/2uk';
+const VISITOR_STATS_URL = 'https://info.flagcounter.com/UsaK';
 
 const SLAB_CLASSES = ['IfcSlab', 'IfcSlabStandardCase', 'IfcSlabElementedCase', 'IfcCovering', 'IfcRoof'];
 const uid = () => Math.random().toString(36).slice(2, 9);
