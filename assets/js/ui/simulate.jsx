@@ -28,30 +28,46 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
   const [snapshot, setSnapshot] = useState(null);
   const [speed, setSpeedState] = useState(5);
   const [showHeat, setShowHeatState] = useState(true);
-  const lidarRef = useRef({ enabled: false, robotId: 1, ...LIDAR_DEFAULTS });
+  // On by default for every robot; robotId 'all' scans the whole fleet.
+  const lidarRef = useRef({ enabled: true, robotId: 'all', ...LIDAR_DEFAULTS });
+  // With one level shown, only agents and scans on that level are drawn.
+  const levelRef = useRef(levelId);
+  levelRef.current = levelId;
+  const onShownLevel = (lid) => levelRef.current == null || levelRef.current === 'all' || String(lid) === String(levelRef.current);
   const lidarOverlayRef = useRef(null);
   const [lidar, setLidarState] = useState(lidarRef.current);
 
-  // Simulated LiDAR of one robot, on the current map (closed doors included) with people and robots.
+  // Simulated LiDAR per robot, on the current map (closed doors included) with people and robots.
+  // sim.lidarScans holds every scan this frame; sim.lidar is the first, kept for older readers.
   const computeLidar = () => {
     const sim = simRef.current;
     if (!sim) return;
     const cfg = lidarRef.current;
-    const rb = cfg.enabled ? (sim.robots.find(r => r.id === cfg.robotId) || sim.robots[0]) : null;
-    if (!rb || rb.state === 'riding' || rb.state === 'stairs') {
-      sim.lidar = null;
-      if (lidarOverlayRef.current) lidarOverlayRef.current.update(null);
-      return;
+    let targets = [];
+    if (cfg.enabled) {
+      targets = cfg.robotId === 'all' ? sim.robots : sim.robots.filter(r => r.id === cfg.robotId);
+      if (!targets.length && sim.robots.length) targets = [sim.robots[0]];
     }
     const body = (sim.scenario.robot ? sim.scenario.robot.width : 0.6) / 2;
-    const dynamic = [];
-    sim.humans.forEach(h => { if (h.levelId === rb.levelId) dynamic.push({ x: h.pos[0], z: h.pos[2], r: 0.22 }); });
-    sim.robots.forEach(o => { if (o !== rb && o.levelId === rb.levelId && o.state !== 'riding' && o.state !== 'stairs') dynamic.push({ x: o.pos[0], z: o.pos[2], r: body }); });
-    const pose = { levelId: rb.levelId, x: rb.pos[0], z: rb.pos[2], heading: rb.heading };
-    sim.lidar = lidarScan(sim.nav, pose, cfg, dynamic, Math.round(sim.time * 10) + 1);
-    sim.lidar.robotName = rb.name;
-    const lv = sim.nav.levels.get(rb.levelId);
-    if (lidarOverlayRef.current && lv) lidarOverlayRef.current.update(sim.lidar, lv.grid.floorY + cfg.mountHeight);
+    const scans = [];
+    targets.forEach(rb => {
+      if (rb.state === 'riding' || rb.state === 'stairs') return;
+      const lv = sim.nav.levels.get(rb.levelId);
+      if (!lv) return;
+      const dynamic = [];
+      sim.humans.forEach(h => { if (h.levelId === rb.levelId) dynamic.push({ x: h.pos[0], z: h.pos[2], r: 0.22 }); });
+      sim.robots.forEach(o => { if (o !== rb && o.levelId === rb.levelId && o.state !== 'riding' && o.state !== 'stairs') dynamic.push({ x: o.pos[0], z: o.pos[2], r: body }); });
+      const pose = { levelId: rb.levelId, x: rb.pos[0], z: rb.pos[2], heading: rb.heading };
+      const scan = lidarScan(sim.nav, pose, cfg, dynamic, Math.round(sim.time * 10) + 1 + rb.id * 7919);
+      scan.robotName = rb.name;
+      scan.robotId = rb.id;
+      scan.colorIndex = rb.colorIndex;
+      scan.y = lv.grid.floorY + cfg.mountHeight;
+      scans.push(scan);
+    });
+    sim.lidarScans = scans;
+    sim.lidar = scans[0] || null;
+    if (lidarOverlayRef.current) lidarOverlayRef.current.update(scans.filter(sc => onShownLevel(sc.pose.levelId)), sim.robots.length);
   };
   const attachLidar = () => {
     const v = viewerRef.current;
@@ -63,7 +79,7 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
     } else {
       v.removeOverlay('sim-lidar');
       lidarOverlayRef.current = null;
-      if (simRef.current) simRef.current.lidar = null;
+      if (simRef.current) { simRef.current.lidar = null; simRef.current.lidarScans = []; }
     }
   };
   const setLidar = (patch) => {
@@ -119,7 +135,7 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
   const attachOverlays = () => {
     const v = viewerRef.current;
     if (!v || !simRef.current) return;
-    agentsRef.current = buildAgentsOverlay(simRef.current, { theme });
+    agentsRef.current = buildAgentsOverlay(simRef.current, { theme, isShown: onShownLevel });
     v.setOverlay('sim-agents', agentsRef.current.group);
     drawHeat();
     attachLidar();
@@ -179,8 +195,50 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
     }
   }, [active]);
   useEffect(() => { if (simRef.current && active) attachOverlays(); }, [theme]);
-  useEffect(() => { if (simRef.current && active) drawHeat(); }, [levelId]);
+  useEffect(() => {
+    if (!simRef.current || !active) return;
+    drawHeat();
+    agentsRef.current && agentsRef.current.update();
+    if (lidarRef.current.enabled) computeLidar();
+    viewerRef.current?.invalidate();
+  }, [levelId]);
   useEffect(() => () => { stopLoop(); }, []);
+  // Frame-exact capture for recordings (only with ?capture=1): step the paused simulation by a
+  // fixed time so screen captures play back smoothly at true 1x speed.
+  useEffect(() => {
+    if (typeof location === 'undefined' || !/[?&]capture=1\b/.test(location.search)) return undefined;
+    window.__bim2botCapture = {
+      step: (dt) => {
+        const sim = simRef.current;
+        if (!sim) return null;
+        sim.step(dt);
+        agentsRef.current && agentsRef.current.update();
+        if (lidarRef.current.enabled) computeLidar();
+        setSnapshot(sim.summary());
+        viewerRef.current?.invalidate();
+        return { time: sim.time, done: sim.done };
+      },
+      start: (scenario) => { start(scenario); return true; },
+      look: (background) => {
+        const v = viewerRef.current;
+        if (!v) return false;
+        v.setShowGrid(false);
+        v.setShowAxes && v.setShowAxes(false);
+        v.scene.background = new THREE.Color(background);
+        v.scene.fog = null;
+        v.invalidate();
+        return true;
+      },
+      cut: (levelName, height) => {
+        const lv = building && building.levels.find(l => l.name === levelName);
+        if (!lv || lv.floorY == null) return false;
+        viewerRef.current?.setPlanCut({ enabled: true, y: lv.floorY + height });
+        return true;
+      },
+      rooms: () => (building ? [...building.spaces.values()].map(sp => ({ id: sp.id, name: sp.name, levelId: sp.levelId, x: sp.position[0], z: sp.position[2] })) : []),
+    };
+    return () => { delete window.__bim2botCapture; };
+  });
   useEffect(() => { reset(); }, [model, navMap]);
 
   return { sim: simRef, status, snapshot, speed, setSpeed, showHeat, setShowHeat, start, pause, resume, runToEnd, reset, lidar, setLidar };
@@ -275,12 +333,18 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
       <div className="side-body">
         <div className="side-scroll nav-scroll">
           <div className="nav-intro">
-            <h2>Simulation</h2>
-            <p>Robots run delivery tasks between rooms on the occupancy grid while people move through the building. Lifts are scheduled, congestion is measured per cell, and every close encounter is logged.</p>
+            <SectionTitle as="h2" title="Simulation" info={<>
+              <p>Robots run delivery tasks between rooms on the occupancy grid while people move through the building.</p>
+              <p>Lifts are scheduled, congestion is measured per cell, and every close encounter is logged.</p>
+            </>} />
           </div>
 
           <div className="nav-section">
-            <h3><Icons.Robot size={16} /> Scenario</h3>
+            <SectionTitle icon={Icons.Robot} title="Scenario" info={<>
+              <p><strong>Random deliveries</strong>: each robot gets tasks between random rooms. <strong>Custom missions</strong>: click a start and a goal on the plan or 3D floor grid; each robot shuttles between its mission’s points.</p>
+              <p>The model has {plural(lifts, 'lift')} and {plural(stairs, 'stair')}.{lifts === 0 && !sc.stairsAsLifts && !preset.canUseStairs ? ' Without lifts this robot stays on its start level.' : ''}{whatIf > 0 ? ` ${plural(whatIf, 'what-if change')} from Navigate (blocked doors and obstacles) apply.` : ''}</p>
+              <p>The same seed always gives the same run, so results can be compared.</p>
+            </>} />
             <div className="field">
               <span>Tasks</span>
               <div className="seg seg-wide" role="group" aria-label="Task mode">
@@ -290,7 +354,7 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
             </div>
             {sc.taskMode === 'missions' && (
               <div className="missions">
-                {missions.length === 0 && !pendingMission && <p className="pane-note">No missions yet. Add one by clicking a start and then a goal on the floor plan or the 3D floor grid. Each robot shuttles between its mission's points.</p>}
+                {missions.length === 0 && !pendingMission && <p className="pane-note">No missions yet. Click a start, then a goal, on the map.</p>}
                 {missions.map((m, i) => (
                   <div key={m.id} className="list-row">
                     <span className="robot-dot" style={{ background: (theme === 'dark' ? ROBOT_COLORS_DARK : ROBOT_COLORS)[i % 8] }} />
@@ -330,16 +394,19 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
               <label className="field"><span>Lift capacity</span><input type="number" min="1" max="6" value={sc.liftCapacity} onChange={e => set({ liftCapacity: clampInt(e.target.value, 1, 6) })} /></label>
             </div>
             {stairs > 0 && (
-              <label className="check-field whatif"><input type="checkbox" checked={sc.stairsAsLifts} onChange={e => set({ stairsAsLifts: e.target.checked })} /> What-if: put a lift in each stair core</label>
+              <div className="check-row">
+                <label className="check-field whatif"><input type="checkbox" checked={sc.stairsAsLifts} onChange={e => set({ stairsAsLifts: e.target.checked })} /> What-if: lift in each stair core</label>
+                <InfoTip title="Lift in each stair core">Pretends every stair core also holds a lift, so wheeled robots can change level in models without lifts.</InfoTip>
+              </div>
             )}
             {nav && nav.zones.length > 0 && (
-              <label className="check-field whatif"><input type="checkbox" checked={sc.applyZones} onChange={e => set({ applyZones: e.target.checked })} /> Apply the {plural(nav.zones.length, 'safety zone')} from Navigate (no-go zones keep robots out, slow zones cap their speed)</label>
+              <div className="check-row">
+                <label className="check-field whatif"><input type="checkbox" checked={sc.applyZones} onChange={e => set({ applyZones: e.target.checked })} /> Apply {plural(nav.zones.length, 'safety zone')} from Navigate</label>
+                <InfoTip title="Safety zones">No-go zones keep robots out like a wall; slow zones cap their speed. Draw them in Navigate.</InfoTip>
+              </div>
             )}
             <DoorScheduleEditor building={building} events={sc.doorEvents} onChange={(doorEvents) => set({ doorEvents })} info={sc.doorInfo} onInfo={(doorInfo) => set({ doorInfo })} onSelectIds={onSelectIds} />
-            <p className="pane-note">
-              The model has {plural(lifts, 'lift')} and {plural(stairs, 'stair')}. {lifts === 0 && !sc.stairsAsLifts && !preset.canUseStairs ? 'Without lifts this robot stays on its start level.' : ''}
-              {whatIf > 0 ? ` ${plural(whatIf, 'what-if change')} from Navigate (blocked doors and obstacles) apply.` : ''}
-            </p>
+            {lifts === 0 && !sc.stairsAsLifts && !preset.canUseStairs && <p className="pane-note">No lifts: this robot stays on its start level.</p>}
             <div className="field-grid seed-row">
               <label className="field"><span>Random seed</span><input type="number" value={sc.seed} onChange={e => set({ seed: clampInt(e.target.value, 0, 1e9) })} /></label>
               <button type="button" className="btn btn-sm" onClick={() => set({ seed: Math.floor(Math.random() * 1e6) })}><Icons.Refresh size={14} /> New seed</button>
@@ -392,7 +459,7 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
               </div>
 
               <div className="nav-section">
-                <h3><Icons.Robot size={16} /> Fleet</h3>
+                <SectionTitle icon={Icons.Robot} title="Fleet" info="Hover a robot for its time split: driving, congestion, lift wait, riding and stops for people. Waited is the sum of all waiting." />
                 <table className="dtbl compact">
                   <thead><tr><th>Robot</th><th>State</th><th className="num">Tasks</th><th className="num">Waited</th></tr></thead>
                   <tbody>
@@ -428,7 +495,7 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
               )}
 
               <div className="nav-section">
-                <h3><Icons.Activity size={16} /> Congestion hotspots</h3>
+                <SectionTitle icon={Icons.Activity} title="Congestion hotspots" info="Places where robots waited for each other the longest. Click one to frame it in the view." />
                 {snap.hotspots.length === 0 ? <p className="pane-note">No robot has had to wait for another robot yet.</p> : (
                   <ol className="hotspots">
                     {snap.hotspots.map((h, i) => (
@@ -444,7 +511,7 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
                 )}
               </div>
 
-              <LidarSection simApi={simApi} model={model} />
+              <LidarSection simApi={simApi} model={model} theme={theme} />
 
               <SimEvents sim={simApi.sim.current} onFrameAt={onFrameAt} />
             </>

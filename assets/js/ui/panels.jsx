@@ -22,6 +22,114 @@ function IconButton({ icon: Icon, label, onClick, active, disabled, size = 16, c
   );
 }
 
+/**
+ * A popover rendered into <body> with fixed positioning, so scrolling panels and
+ * overflow-clipped toolbars never cut it off. Follows its anchor on scroll; closes on outside click or Escape.
+ */
+function FloatingPanel({ anchorRef, open, onClose, placement = 'below', className = '', label, children }) {
+  const panelRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  React.useLayoutEffect(() => {
+    if (!open) { setPos(null); return; }
+    const place = () => {
+      const a = anchorRef.current, p = panelRef.current;
+      if (!a || !p) return;
+      const r = a.getBoundingClientRect();
+      const vw = window.innerWidth, vh = window.innerHeight;
+      if (placement === 'corner') {
+        // Bottom-right corner of the surrounding 3D view, kept clear of the dock it opens from.
+        const host = a.closest('.viewer-wrap');
+        const hr = host ? host.getBoundingClientRect() : { left: 0, top: 0, right: vw, bottom: vh };
+        const dock = a.closest('.dock');
+        const w = p.offsetWidth;
+        const left = Math.max(hr.left + 8, hr.right - w - 12);
+        let bottom = hr.bottom - 12;
+        if (dock) {
+          const dr = dock.getBoundingClientRect();
+          if (left < dr.right + 8) bottom = dr.top - 8;
+        }
+        const maxHeight = Math.max(160, bottom - hr.top - 60);
+        const h = Math.min(p.scrollHeight, maxHeight);
+        setPos({ left, top: bottom - h, maxHeight });
+        return;
+      }
+      const w = p.offsetWidth, h = p.offsetHeight;
+      let left = r.left + r.width / 2 - w / 2;
+      left = Math.max(8, Math.min(vw - w - 8, left));
+      let top = placement === 'above' ? r.top - h - 10 : r.bottom + 8;
+      if (placement !== 'above' && top + h > vh - 8) top = Math.max(8, r.top - h - 8);
+      if (placement === 'above' && top < 8) top = Math.min(vh - h - 8, r.bottom + 8);
+      setPos({ left, top });
+    };
+    place();
+    // Follow the anchor when a panel scrolls or the window resizes.
+    const onScroll = (e) => { if (!panelRef.current?.contains(e.target)) place(); };
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', onScroll, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', onScroll, true); };
+  }, [open, placement]);
+  useEffect(() => {
+    if (!open) return;
+    const down = (e) => {
+      if (panelRef.current?.contains(e.target) || anchorRef.current?.contains(e.target)) return;
+      onClose();
+    };
+    const esc = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('pointerdown', down);
+    window.addEventListener('keydown', esc);
+    return () => {
+      window.removeEventListener('pointerdown', down);
+      window.removeEventListener('keydown', esc);
+    };
+  }, [open, onClose]);
+  if (!open) return null;
+  return ReactDOM.createPortal(
+    <div ref={panelRef} className={`floating ${className}`} role="dialog" aria-label={label} style={pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 }}>
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+/** A small (i) button that explains the control or section next to it. */
+function InfoTip({ label = 'What is this?', title, children, size = 15, className = '' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const close = useCallback(() => setOpen(false), []);
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        className={`info-btn ${className}`}
+        aria-label={title ? `About ${title}` : label}
+        title={title ? `About ${title}` : label}
+        aria-expanded={open}
+        data-active={open ? 'true' : undefined}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(o => !o); }}
+      >
+        <Icons.Info size={size} />
+      </button>
+      <FloatingPanel anchorRef={ref} open={open} onClose={close} className="info-pop" label={title || label}>
+        {title && <div className="info-pop-title">{title}</div>}
+        <div className="info-pop-body">{children}</div>
+      </FloatingPanel>
+    </>
+  );
+}
+
+/** Section heading with an optional info button aligned to the right. */
+function SectionTitle({ icon: Icon, title, info, as: Tag = 'h3', children }) {
+  return (
+    <Tag className="section-title">
+      {Icon && <Icon size={16} />}
+      <span className="section-title-text">{title}</span>
+      {children}
+      {info && <InfoTip title={title}>{info}</InfoTip>}
+    </Tag>
+  );
+}
+
 function EmptyState({ icon: Icon, title, children, action }) {
   return (
     <div className="empty">
@@ -1289,7 +1397,7 @@ function download(content, filename, mime) {
 }
 
 Object.assign(window, {
-  IconButton, EmptyState, Modal, Section, KV, Muted, LinkButton, Provenance,
+  IconButton, FloatingPanel, InfoTip, SectionTitle, EmptyState, Modal, Section, KV, Muted, LinkButton, Provenance,
   LeftSidebar, Inspector, BottomPanel,
   exportCSV, exportJSON, download, elementLabel, plural, descendantIds, runModelChecks,
 });

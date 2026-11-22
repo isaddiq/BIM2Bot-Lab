@@ -44,12 +44,17 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
       <div className="side-body">
         <div className="side-scroll nav-scroll">
           <div className="nav-intro">
-            <h2>Navigation</h2>
-            <p>Plan robot routes on a room graph or on occupancy grids derived from the IFC geometry. Every map cell and graph node traces back to the element that produced it.</p>
+            <SectionTitle as="h2" title="Navigation" info={<>
+              <p>Plan robot routes on a room graph or on occupancy grids derived from the IFC geometry.</p>
+              <p>Every map cell and graph node traces back to the IFC element that produced it, so you can see why a route goes where it does.</p>
+            </>} />
           </div>
 
           <div className="nav-section">
-            <h3><Icons.Robot size={16} /> Robot</h3>
+            <SectionTitle icon={Icons.Robot} title="Robot" info={<>
+              <p>The robot’s size decides which doors it fits through and how far it keeps from walls. Height sets which geometry counts as an obstacle.</p>
+              <p>Climbing stairs and riding lifts decide which level changes it may use.</p>
+            </>} />
             <label className="field">
               <span>Profile</span>
               <select value={presetId} onChange={e => { const p = ROBOT_PRESETS.find(x => x.id === e.target.value); if (p) nav.setRobot({ ...p }); }}>
@@ -67,13 +72,20 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
               <label className="check-field"><input type="checkbox" checked={robot.canUseLifts} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', canUseLifts: e.target.checked })} /> Rides lifts</label>
             </div>
             {hasStairs && (
-              <label className="check-field whatif"><input type="checkbox" checked={nav.stairsAsLifts} onChange={e => nav.setStairsAsLifts(e.target.checked)} /> What-if: put a lift in each stair core (grid planner and simulation)</label>
+              <div className="check-row">
+                <label className="check-field whatif"><input type="checkbox" checked={nav.stairsAsLifts} onChange={e => nav.setStairsAsLifts(e.target.checked)} /> What-if: lift in each stair core</label>
+                <InfoTip title="Lift in each stair core">Pretends every stair core also holds a lift, so wheeled robots can change level in models without lifts. Applies to the occupancy-grid planner and the simulation.</InfoTip>
+              </div>
             )}
             <p className="pane-note">Doors need {(robot.width + 2 * robot.clearance).toFixed(2)} m clear width. The robot needs {robot.height.toFixed(1)} m headroom.</p>
           </div>
 
           <div className="nav-section">
-            <h3><Icons.Route size={16} /> Route</h3>
+            <SectionTitle icon={Icons.Route} title="Route" info={<>
+              <p><strong>Room graph</strong>: a fast room-to-room route through doors, stairs and lifts. Good for checking connectivity.</p>
+              <p><strong>Occupancy grid</strong>: a metric A* path on the rasterised floor that respects walls, furniture and the robot’s size. Needed for ROS 2 waypoints and simulation.</p>
+              <p>Choose rooms from the lists, or pick exact points on the 3D floor grid or the plan.</p>
+            </>} />
             <div className="seg seg-wide" role="group" aria-label="Planner">
               <button type="button" aria-pressed={!grid} onClick={() => nav.setPlanner('graph')}>Room graph</button>
               <button type="button" aria-pressed={grid} onClick={() => nav.setPlanner('grid')}>Occupancy grid</button>
@@ -109,8 +121,22 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
             {nav.hasStart && nav.hasGoal && grid && <GridRouteCard route={gridRoute} navState={navState} building={building} nav={nav} onFrameRoute={onFrameRoute} />}
           </div>
 
+          <div className="nav-section ros-export">
+            <SectionTitle icon={Icons.Download} title="Export for ROS 2" info={<>
+              <p>Standard Nav2 <code>map_server</code> files, one map per level: a binary PGM and its YAML, the same format as <code>map_saver</code>, so they load without conversion.</p>
+              <p>Cells use this robot’s height. They are not inflated, because Nav2 inflates its own costmap.</p>
+              <p>With a grid route planned, the zip also holds the route as <code>FollowWaypoints</code> goals.</p>
+            </>} />
+            {!navState ? <p className="pane-note"><span className="spinner" /> Waiting for the occupancy grids…</p>
+              : <RosExportSection navState={navState} model={model} gridRoute={grid ? gridRoute : null} />}
+          </div>
+
           <div className="nav-section">
-            <h3><Icons.Table size={16} /> Occupancy map</h3>
+            <SectionTitle icon={Icons.Table} title="Occupancy map" info={navState ? <>
+              <p>{plural(navState.navMap.grids.length, 'level')} at {Math.round(navState.navMap.res * 100)} cm cells, rasterised in {navState.navMap.buildMs.toFixed(0)} ms and inflated for this robot in {navState.buildMs.toFixed(0)} ms.</p>
+              <p>Obstacles are geometry between {BAND_INFO} above each floor. “Too close to obstacle” cells are where the robot’s centre cannot go.</p>
+              <p>Use <strong>Inspect cell</strong> to trace any cell back to the step and IFC element that caused it, and <strong>Place obstacle</strong> to test what-if blockages.</p>
+            </> : 'The model is rasterised into one grid per level.'} />
             {!navState ? (
               <p className="pane-note"><span className="spinner" /> Rasterising the model into occupancy grids…</p>
             ) : (
@@ -119,20 +145,21 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
           </div>
 
           <div className="nav-section">
-            <h3><Icons.Download size={16} /> Export for ROS 2</h3>
-            {!navState ? <p className="pane-note"><span className="spinner" /> Waiting for the occupancy grids…</p>
-              : <RosExportSection navState={navState} model={model} gridRoute={grid ? gridRoute : null} />}
-          </div>
-
-          <div className="nav-section">
-            <h3><Icons.Alert size={16} /> Safety zones</h3>
+            <SectionTitle icon={Icons.Alert} title="Safety zones" info={<>
+              <p><strong>No-go zones</strong> keep robots out, like a wall. <strong>Slow zones</strong> cap the robot’s speed, and routes prefer to avoid them.</p>
+              <p>Draw a zone with two clicks (opposite corners) on the coloured grid or the floor plan.</p>
+              <p>Zones always apply to routes here. In Simulate they are off unless you switch them on.</p>
+            </>} />
             <SafetyZonesSection nav={nav} navState={navState} />
           </div>
 
           <div className="nav-section">
-            <h3><Icons.Ban size={16} /> What-if blocking</h3>
+            <SectionTitle icon={Icons.Ban} title="What-if blocking" info={<>
+              <p>Block a door from the inspector, or with the <Icons.Ban size={12} /> button on a route step, to see how the robot reroutes.</p>
+              <p>Place obstacles on the occupancy map with the tools in the Occupancy map section.</p>
+            </>} />
             {nav.blocked.size === 0 ? (
-              <p className="pane-note">Block a door from the inspector or from a route step to see how the robot reroutes. Place obstacles on the occupancy map with the tools above.</p>
+              <p className="pane-note">No doors blocked.</p>
             ) : (
               <>
                 {[...nav.blocked].map(id => {
@@ -151,7 +178,10 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
           </div>
 
           <div className="nav-section">
-            <h3><Icons.Graph size={16} /> Room graph</h3>
+            <SectionTitle icon={Icons.Graph} title="Room graph" info={<>
+              <p>{plural(building.nodes.size, 'node')} and {plural(building.edges.length, 'link')} built from {plural(s.rooms, 'room')}, {plural(s.doors, 'door')}, {plural(s.openings, 'open connection')} and {plural(s.verticals, 'vertical connector')}.</p>
+              <p>Rooms (IfcSpace) become nodes; doors, open connections, stairs and lifts become links. Click a node in the view to inspect the IFC element it came from.</p>
+            </>} />
             <label className="check-field"><input type="checkbox" checked={nav.showGraph} onChange={e => nav.setShowGraph(e.target.checked)} /> Show room graph in the view</label>
             <div className="legend">
               <span><i className="lg lg-space" /> Room</span>
@@ -160,11 +190,14 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
               <span><i className="lg lg-landing" /> Stair or lift</span>
               <span><i className="lg lg-blocked" /> Blocked or too narrow</span>
             </div>
-            <p className="pane-note">{plural(building.nodes.size, 'node')} and {plural(building.edges.length, 'link')} from {plural(s.rooms, 'room')}, {plural(s.doors, 'door')}, {plural(s.openings, 'open connection')} and {plural(s.verticals, 'vertical connector')}. Click a node to inspect the IFC element it came from.</p>
+            <p className="pane-note">{plural(building.nodes.size, 'node')}, {plural(building.edges.length, 'link')}.</p>
           </div>
 
           <div className="nav-section">
-            <h3><Icons.Activity size={16} /> Readiness</h3>
+            <SectionTitle icon={Icons.Activity} title="Readiness" info={<>
+              <p>Checks what stops this robot from navigating the model, grouped by pipeline step (S1 levels to S5 topology).</p>
+              <p>Use <strong>Show</strong> on a check to select and zoom to the IFC elements involved.</p>
+            </>} />
             {s.accessibleShare != null && (
               <div className="meter" title={`${s.accessibleRooms} of ${s.rooms} rooms reachable from each other`}>
                 <div className="meter-label"><span>Rooms connected on the room graph</span><span className="mono">{s.accessibleRooms} / {s.rooms}</span></div>
@@ -250,10 +283,10 @@ function GridRouteCard({ route, navState, building, nav, onFrameRoute }) {
           </li>
         ))}
       </ol>
-      <p className="pane-note pad-x">8-connected A* without corner cutting, smoothed by line of sight. Cost rises within 0.4 m of the inflation limit to keep the robot mid-corridor{nav.zones.some(z => z.kind === 'slow') ? ', and inside slow zones in proportion to the lower speed' : ''}.</p>
       <div className="route-foot">
         <button type="button" className="btn btn-sm" onClick={onFrameRoute}><Icons.Focus size={14} /> Frame route</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={nav.clearRoute}>Clear</button>
+        <InfoTip title="How this path is planned">8-connected A* without corner cutting, smoothed by line of sight. Cost rises within 0.4 m of the inflation limit to keep the robot mid-corridor{nav.zones.some(z => z.kind === 'slow') ? ', and inside slow zones in proportion to the lower speed' : ''}.</InfoTip>
       </div>
       <RouteCompare navState={navState} route={route} from={nav.startPt} to={nav.goalPt} />
     </div>
@@ -278,6 +311,10 @@ function RouteCompare({ navState, route, from, to }) {
     <div className="route-compare">
       <div className="rc-head">
         <strong>Alternative routes</strong>
+        <InfoTip title="Alternative routes">
+          <p>Distance is measured on the planned path. Time adds lift rides (travel plus {params.liftDoorTime} s of doors at each end, no queueing) and stairs at {Math.round(params.stairSpeedFactor * 100)}% speed, as in Simulate.</p>
+          <p>Energy is an estimate from the coefficients below, not a measurement: set them for your robot.{result ? ` Planned in ${result.ms.toFixed(0)} ms.` : ''}</p>
+        </InfoTip>
         <IconButton icon={Icons.X} label="Close comparison" size={13} className="sm" onClick={() => setOpen(false)} />
       </div>
       <div className="rc-table">
@@ -312,7 +349,6 @@ function RouteCompare({ navState, route, from, to }) {
           <label className="field"><span>Idle (W)</span><input type="number" min="0" step="1" value={params.idleW} onChange={e => setP('idleW', e.target.value, 0, 5000)} /></label>
         </div>
       )}
-      <p className="pane-note">Distance is measured on the planned path. Time adds lift rides (travel plus {params.liftDoorTime} s of doors at each end, no queueing) and stairs at {Math.round(params.stairSpeedFactor * 100)}% speed, as in Simulate. Energy is an estimate from the coefficients above, not a measurement: set them for your robot.{result ? ` Planned in ${result.ms.toFixed(0)} ms.` : ''}</p>
     </div>
   );
 }
@@ -333,8 +369,9 @@ function RosExportSection({ navState, model, gridRoute }) {
   };
   return (
     <>
-      <p className="pane-note">Standard Nav2 map_server files, one map per level: a binary PGM and its YAML, the same format as map_saver, so they load without conversion. Cells use this robot’s height. They are not inflated, because Nav2 inflates its own costmap.</p>
-      <label className="field">
+      <button type="button" className="btn btn-primary ros-export-btn" onClick={go}><Icons.Download size={16} /> Download ROS 2 maps (.zip)</button>
+      <p className="ros-export-note">{plural(navState.navMap.grids.length, 'level')}: PGM + YAML for Nav2 map_server{withRoute && gridRoute ? ', plus route waypoints' : ''}.</p>
+      <label className="field" style={{ marginTop: 10 }}>
         <span>Cells without a floor</span>
         <select value={voidAs} onChange={e => setVoidAs(e.target.value)}>
           <option value="occupied">Occupied (safer: edges and shafts are walls)</option>
@@ -345,8 +382,7 @@ function RosExportSection({ navState, model, gridRoute }) {
         <label className="check-field"><input type="checkbox" checked={includeZones} disabled={!hasNogo} onChange={e => setIncludeZones(e.target.checked)} /> No-go zones as occupied</label>
         <label className="check-field"><input type="checkbox" checked={withRoute && !!gridRoute} disabled={!gridRoute} onChange={e => setWithRoute(e.target.checked)} /> Route as Nav2 waypoint goals</label>
       </div>
-      {!gridRoute && <p className="pane-note">Plan a route on the occupancy grid to include it as FollowWaypoints goals.</p>}
-      <button type="button" className="btn btn-sm" onClick={go}><Icons.Download size={14} /> Download ROS 2 maps (.zip)</button>
+      {!gridRoute && <p className="pane-note">Plan an occupancy-grid route to add waypoints.</p>}
     </>
   );
 }
@@ -359,7 +395,6 @@ function SafetyZonesSection({ nav, navState }) {
   const levelName = (id) => (navState && navState.levels.get(id) ? navState.levels.get(id).grid.levelName : 'level');
   return (
     <>
-      <p className="pane-note">No-go zones keep robots out, like a wall. Slow zones cap the robot’s speed, and routes prefer to avoid them. Zones always apply to routes here. In Simulate they are off unless you switch them on.</p>
       <div className="pick-row">
         <button type="button" className="btn btn-sm" data-active={mode === 'zone-nogo'} onClick={() => nav.setClickMode(mode === 'zone-nogo' ? 'select' : 'zone-nogo')}><Icons.Ban size={14} /> Draw no-go zone</button>
         <button type="button" className="btn btn-sm" data-active={mode === 'zone-slow'} onClick={() => nav.setClickMode(mode === 'zone-slow' ? 'select' : 'zone-slow')}><Icons.Speed size={14} /> Draw slow zone</button>
@@ -414,7 +449,6 @@ function OccupancyMapSection({ navState, gridInfo, nav, model, onSelectIds }) {
           <div key={st}><i className={`gl gl-${cls}`} /><span>{label}</span><span className="mono muted">{area(counts[st])}</span></div>
         ))}
       </div>
-      <p className="pane-note">{plural(sum.levels.length, 'level')} at {Math.round(navState.navMap.res * 100)} cm cells, rasterised in {navState.navMap.buildMs.toFixed(0)} ms and inflated for this robot in {navState.buildMs.toFixed(0)} ms. Obstacles are geometry between {BAND_INFO} above each floor.</p>
       {navState.navMap.warnings.map((w, i) => <p key={i} className="pane-note warn-note">{w}</p>)}
 
       <div className="field">
@@ -435,7 +469,7 @@ function OccupancyMapSection({ navState, gridInfo, nav, model, onSelectIds }) {
           </select>
         </label>
       )}
-      {nav.clickMode !== 'select' && <p className="pane-note">Click on the coloured grid. {nav.clickMode === 'obstacle' ? 'Click an existing obstacle to remove it.' : 'The cell’s state is traced back to the step and IFC element that caused it.'}</p>}
+      {nav.clickMode !== 'select' && <p className="pane-note">Click on the coloured grid.{nav.clickMode === 'obstacle' ? ' Click an obstacle again to remove it.' : ''}</p>}
 
       {cell && (
         <div className="cell-card" data-state={cell.state}>

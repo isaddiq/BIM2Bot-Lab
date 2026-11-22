@@ -470,11 +470,13 @@
         const s = Math.max(6, g.res * sc);
         ctx.strokeRect(x0 - (s - g.res * sc) / 2, y0 - (s - g.res * sc) / 2, s, s);
       }
-      const scan = sim && sim.lidar;
-      if (scan && scan.pose.levelId === level.id) {
+      const scans = sim ? sim.lidarScans || (sim.lidar ? [sim.lidar] : []) : [];
+      scans.forEach((scan) => {
+        if (scan.pose.levelId !== level.id) return;
+        const color = lidarColor(scan.colorIndex || 0, sim.robots.length, theme2);
         const [ox, oy] = toScreen(scan.pose.x, scan.pose.z);
-        ctx.strokeStyle = col.teal;
-        ctx.globalAlpha = 0.16;
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.2;
         ctx.lineWidth = 1;
         ctx.beginPath();
         for (let b = 0; b < scan.ranges.length; b++) {
@@ -484,13 +486,13 @@
         }
         ctx.stroke();
         ctx.globalAlpha = 1;
-        ctx.fillStyle = col.teal;
+        ctx.fillStyle = color;
         for (let b = 0; b < scan.ranges.length; b++) {
           if (scan.ranges[b] >= scan.cfg.range) continue;
           const [hx, hy] = toScreen(scan.hits[b * 2], scan.hits[b * 2 + 1]);
           ctx.fillRect(hx - 1.5, hy - 1.5, 3, 3);
         }
-      }
+      });
       if (sim) {
         const pal = theme2 === "dark" ? ROBOT_COLORS_DARK : ROBOT_COLORS;
         const r = sim.nav.radius;

@@ -17,6 +17,104 @@
       /* @__PURE__ */ React.createElement(Icon, { size })
     );
   }
+  function FloatingPanel({ anchorRef, open, onClose, placement = "below", className = "", label, children }) {
+    const panelRef = useRef(null);
+    const [pos, setPos] = useState(null);
+    React.useLayoutEffect(() => {
+      if (!open) {
+        setPos(null);
+        return;
+      }
+      const place = () => {
+        const a = anchorRef.current, p = panelRef.current;
+        if (!a || !p) return;
+        const r = a.getBoundingClientRect();
+        const vw = window.innerWidth, vh = window.innerHeight;
+        if (placement === "corner") {
+          const host = a.closest(".viewer-wrap");
+          const hr = host ? host.getBoundingClientRect() : { left: 0, top: 0, right: vw, bottom: vh };
+          const dock = a.closest(".dock");
+          const w2 = p.offsetWidth;
+          const left2 = Math.max(hr.left + 8, hr.right - w2 - 12);
+          let bottom = hr.bottom - 12;
+          if (dock) {
+            const dr = dock.getBoundingClientRect();
+            if (left2 < dr.right + 8) bottom = dr.top - 8;
+          }
+          const maxHeight = Math.max(160, bottom - hr.top - 60);
+          const h2 = Math.min(p.scrollHeight, maxHeight);
+          setPos({ left: left2, top: bottom - h2, maxHeight });
+          return;
+        }
+        const w = p.offsetWidth, h = p.offsetHeight;
+        let left = r.left + r.width / 2 - w / 2;
+        left = Math.max(8, Math.min(vw - w - 8, left));
+        let top = placement === "above" ? r.top - h - 10 : r.bottom + 8;
+        if (placement !== "above" && top + h > vh - 8) top = Math.max(8, r.top - h - 8);
+        if (placement === "above" && top < 8) top = Math.min(vh - h - 8, r.bottom + 8);
+        setPos({ left, top });
+      };
+      place();
+      const onScroll = (e) => {
+        var _a;
+        if (!((_a = panelRef.current) == null ? void 0 : _a.contains(e.target))) place();
+      };
+      window.addEventListener("resize", place);
+      window.addEventListener("scroll", onScroll, true);
+      return () => {
+        window.removeEventListener("resize", place);
+        window.removeEventListener("scroll", onScroll, true);
+      };
+    }, [open, placement]);
+    useEffect(() => {
+      if (!open) return;
+      const down = (e) => {
+        var _a, _b;
+        if (((_a = panelRef.current) == null ? void 0 : _a.contains(e.target)) || ((_b = anchorRef.current) == null ? void 0 : _b.contains(e.target))) return;
+        onClose();
+      };
+      const esc = (e) => {
+        if (e.key === "Escape") onClose();
+      };
+      window.addEventListener("pointerdown", down);
+      window.addEventListener("keydown", esc);
+      return () => {
+        window.removeEventListener("pointerdown", down);
+        window.removeEventListener("keydown", esc);
+      };
+    }, [open, onClose]);
+    if (!open) return null;
+    return ReactDOM.createPortal(
+      /* @__PURE__ */ React.createElement("div", { ref: panelRef, className: `floating ${className}`, role: "dialog", "aria-label": label, style: pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 } }, children),
+      document.body
+    );
+  }
+  function InfoTip({ label = "What is this?", title, children, size = 15, className = "" }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    const close = useCallback(() => setOpen(false), []);
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        ref,
+        type: "button",
+        className: `info-btn ${className}`,
+        "aria-label": title ? `About ${title}` : label,
+        title: title ? `About ${title}` : label,
+        "aria-expanded": open,
+        "data-active": open ? "true" : void 0,
+        onClick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }
+      },
+      /* @__PURE__ */ React.createElement(Icons.Info, { size })
+    ), /* @__PURE__ */ React.createElement(FloatingPanel, { anchorRef: ref, open, onClose: close, className: "info-pop", label: title || label }, title && /* @__PURE__ */ React.createElement("div", { className: "info-pop-title" }, title), /* @__PURE__ */ React.createElement("div", { className: "info-pop-body" }, children)));
+  }
+  function SectionTitle({ icon: Icon, title, info, as: Tag = "h3", children }) {
+    return /* @__PURE__ */ React.createElement(Tag, { className: "section-title" }, Icon && /* @__PURE__ */ React.createElement(Icon, { size: 16 }), /* @__PURE__ */ React.createElement("span", { className: "section-title-text" }, title), children, info && /* @__PURE__ */ React.createElement(InfoTip, { title }, info));
+  }
   function EmptyState({ icon: Icon, title, children, action }) {
     return /* @__PURE__ */ React.createElement("div", { className: "empty" }, Icon && /* @__PURE__ */ React.createElement("div", { className: "empty-icon" }, /* @__PURE__ */ React.createElement(Icon, { size: 20 })), /* @__PURE__ */ React.createElement("h3", null, title), children && /* @__PURE__ */ React.createElement("p", null, children), action);
   }
@@ -635,6 +733,9 @@
   }
   Object.assign(window, {
     IconButton,
+    FloatingPanel,
+    InfoTip,
+    SectionTitle,
     EmptyState,
     Modal,
     Section,

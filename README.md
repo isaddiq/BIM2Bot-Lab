@@ -184,6 +184,7 @@ What-if obstacles and blocked doors from Navigate also apply to the simulation.
 | ------ | -------- | ------------------ |
 | **Office blocks** (`assets/ifc/LargeBuilding.ifc`, bundled) | 2 storeys, 8 rooms, 18 doors and furniture | [BIM Whale samples](https://github.com/andrewisen/bim-whale-ifc-samples) by André Wisén, MIT licence. See `assets/ifc/LICENSE-LargeBuilding.txt`. |
 | **Duplex apartment** (downloaded when opened) | 2 units over 2 storeys, 21 rooms, stairs and space boundaries | Common BIM Files (NIBS buildingSMART alliance and US Army ERDC). It is not redistributed here. The browser fetches it from a [public GitHub mirror](https://github.com/youshengCode/IfcSampleFiles) when you open it. |
+| **Research centre with lift** (`assets/ifc/ResearchCentre.ifc`, bundled, downloadable from the start page) | 4 storeys, 56 rooms, 53 doors, furniture, a lift serving every floor and a stair core with one flight per storey | Made for BIM2Bot Lab as IFC4 with IfcOpenShell, MIT licence like the code. Use it to test multi-storey routes and lift scheduling. |
 
 You can also open your own `.ifc` file, or drop it on the window.
 
@@ -225,7 +226,7 @@ flowchart TB
 index.html                       Loads React 18 (UMD), Three.js 0.160 (ESM), then the compiled scripts in order
 assets/
   css/main.css                   Design tokens (light/dark), layout and components
-  ifc/                           Bundled sample model and its licence
+  ifc/                           Bundled sample models and licences
   images/readme/                 README screenshots, animation and social preview
   logos/                         Mark (favicon) and wordmarks (light/dark)
   js/

@@ -26,6 +26,18 @@ const SAMPLES = [
     creditUrl: 'https://github.com/youshengCode/IfcSampleFiles',
     bundled: false,
   },
+  {
+    id: 'research-centre',
+    name: 'Research centre with lift',
+    file: 'ResearchCentre.ifc',
+    url: 'assets/ifc/ResearchCentre.ifc',
+    size: '0.8 MB',
+    facts: '4 storeys, 56 rooms, 53 doors, a lift to every floor and a stair core',
+    credit: 'Made for BIM2Bot Lab (IFC4), MIT licence',
+    creditUrl: 'https://github.com/isaddiq/BIM2Bot-Lab/blob/main/LICENSE',
+    bundled: true,
+    downloadable: true,
+  },
 ];
 const SOURCE_REPO_URL = 'https://github.com/isaddiq/BIM2Bot-Lab';
 const AUTHOR_URL = 'https://isaddiq.github.io/';
@@ -279,7 +291,7 @@ function WorkspaceSwitch({ value, onChange, disabled }) {
 // ---------------------------------------------------------------------------
 // Top bar
 // ---------------------------------------------------------------------------
-function TopBar({ model, workspace, onWorkspace, onUpload, onLoadSample, onClose, onSearch, onOpenIntel, onOpenSchema, onOpenHelp, theme, onToggleTheme, searchRef, onHome }) {
+function TopBar({ model, workspace, onWorkspace, onUpload, onLoadSample, onClose, onSearch, onOpenIntel, onOpenHelp, theme, onToggleTheme, searchRef, onHome }) {
   const [q, setQ] = useState('');
   const [focused, setFocused] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -348,7 +360,6 @@ function TopBar({ model, workspace, onWorkspace, onUpload, onLoadSample, onClose
       <button type="button" className="btn btn-primary" onClick={onUpload}><Icons.Upload size={15} /> Open IFC</button>
       <div className="topbar-tools">
         <IconButton icon={Icons.Dashboard} label="Building intelligence" disabled={!model} onClick={onOpenIntel} />
-        <IconButton icon={Icons.Schema} label="Schema explorer" disabled={!model} onClick={onOpenSchema} />
         <IconButton icon={Icons.Activity} label="Visitor statistics" aria-controls="vc-popover" onClick={() => document.getElementById('vc-popover')?.classList.toggle('vc-open')} />
         <IconButton icon={theme === 'dark' ? Icons.Sun : Icons.Moon} label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'} onClick={onToggleTheme} />
         <IconButton icon={Icons.Help} label="Shortcuts and help" shortcut="?" onClick={onOpenHelp} />
@@ -598,7 +609,7 @@ function ViewerCanvas(props) {
               </div>
               <div className="dock-group">
                 <LayersPopover
-                  model={model} showSpaces={showSpaces} setShowSpaces={setShowSpaces} slabsTransparent={slabsTransparent} onToggleSlabs={onToggleSlabs}
+                  model={model} viewerState={viewerState} dispatch={dispatch} showSpaces={showSpaces} setShowSpaces={setShowSpaces} slabsTransparent={slabsTransparent} onToggleSlabs={onToggleSlabs}
                   onFocusGroup={onFocusGroup} onResetFilters={onResetFilters} explode={explode} setExplode={setExplode} showAxes={showAxes} setShowAxes={setShowAxes}
                 />
                 <IconButton icon={Icons.Camera} label="Save a screenshot" onClick={() => {
@@ -620,47 +631,67 @@ function ViewerCanvas(props) {
 }
 
 // Filters and scene options that do not need to be on screen all the time.
-function LayersPopover({ model, showSpaces, setShowSpaces, slabsTransparent, onToggleSlabs, onFocusGroup, onResetFilters, explode, setExplode, showAxes, setShowAxes }) {
+function LayersPopover({ model, viewerState, dispatch, showSpaces, setShowSpaces, slabsTransparent, onToggleSlabs, onFocusGroup, onResetFilters, explode, setExplode, showAxes, setShowAxes }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
-    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
-    window.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', esc);
-    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', esc); };
-  }, [open]);
-  const active = showSpaces || slabsTransparent || explode > 0;
+  const close = useCallback(() => setOpen(false), []);
+  // Elements with geometry per category, for the show/hide filter.
+  const groups = useMemo(() => {
+    const byGroup = new Map();
+    model.byClass.forEach((ids, cls) => {
+      if (cls === 'IfcSpace') return; // room volumes have their own switch above
+      const g = classGroupOf(cls);
+      const withGeo = ids.filter(id => { const el = model.byId.get(id); return el && !el.isType && el.geometry; });
+      if (!withGeo.length) return;
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g).push(...withGeo);
+    });
+    return CLASS_GROUPS.filter(g => byGroup.has(g.id)).map(g => ({ id: g.id, name: g.name, ids: byGroup.get(g.id) }));
+  }, [model]);
+  const hidden = viewerState.hiddenIds;
+  const groupHidden = (g) => g.ids.length > 0 && g.ids.every(id => hidden.has(id));
+  const anyGroupHidden = groups.some(groupHidden);
+  const active = showSpaces || slabsTransparent || explode > 0 || anyGroupHidden;
   return (
-    <div className="menu-anchor" ref={ref}>
-      <button type="button" className="icon-btn dock-layers" data-active={active ? 'true' : undefined} aria-expanded={open} aria-label="Layers and filters" title="Layers and filters" onClick={() => setOpen(o => !o)}>
+    <div className="menu-anchor">
+      <button ref={ref} type="button" className="icon-btn dock-layers" data-active={active ? 'true' : undefined} aria-expanded={open} aria-label="Layers and filters" title="Layers and filters" onClick={() => setOpen(o => !o)}>
         <Icons.Layers size={16} />
       </button>
-      {open && (
-        <div className="menu dock-menu" role="dialog" aria-label="Layers and filters">
-          <div className="menu-title">Show</div>
-          <label className="check-field menu-check"><input type="checkbox" checked={showSpaces} onChange={() => setShowSpaces(x => !x)} /> Room volumes</label>
-          <label className="check-field menu-check"><input type="checkbox" checked={slabsTransparent} onChange={onToggleSlabs} /> See-through slabs and roofs</label>
-          <label className="check-field menu-check"><input type="checkbox" checked={showAxes} onChange={() => setShowAxes(x => !x)} /> Axes</label>
-          <div className="menu-sep" />
-          <div className="menu-title">Isolate</div>
-          <button type="button" role="menuitem" onClick={() => { onFocusGroup('structure'); setOpen(false); }}><Icons.Building size={15} /> Structure</button>
-          <button type="button" role="menuitem" onClick={() => { onFocusGroup('mep'); setOpen(false); }}><Icons.Activity size={15} /> MEP</button>
-          {model.storeys.length > 1 && (
-            <>
-              <div className="menu-sep" />
-              <label className="slider-row menu-slider">
-                <span>Explode levels</span>
-                <input type="range" min="0" max="1" step="0.01" value={explode} onChange={e => setExplode(parseFloat(e.target.value))} />
-                <span className="mono">{Math.round(explode * 100)}%</span>
+      <FloatingPanel anchorRef={ref} open={open} onClose={close} placement="corner" className="menu layers-pop" label="Layers and filters">
+        <div className="menu-title">Show</div>
+        <label className="check-field menu-check"><input type="checkbox" checked={showSpaces} onChange={() => setShowSpaces(x => !x)} /> Room volumes</label>
+        <label className="check-field menu-check"><input type="checkbox" checked={slabsTransparent} onChange={onToggleSlabs} /> See-through slabs and roofs</label>
+        <label className="check-field menu-check"><input type="checkbox" checked={showAxes} onChange={() => setShowAxes(x => !x)} /> Axes</label>
+        {groups.length > 0 && (
+          <>
+            <div className="menu-sep" />
+            <div className="menu-title">Filter by category</div>
+            {groups.map(g => (
+              <label key={g.id} className="check-field menu-check">
+                <input type="checkbox" checked={!groupHidden(g)} onChange={() => dispatch({ type: 'toggle-hide', ids: g.ids })} />
+                <span className="menu-check-label">{g.name}</span>
+                <span className="mono muted trail">{g.ids.length.toLocaleString()}</span>
               </label>
-            </>
-          )}
-          <div className="menu-sep" />
-          <button type="button" role="menuitem" onClick={() => { onResetFilters(); setOpen(false); }}><Icons.Reset size={15} /> Reset view filters</button>
-        </div>
-      )}
+            ))}
+          </>
+        )}
+        <div className="menu-sep" />
+        <div className="menu-title">Isolate</div>
+        <button type="button" role="menuitem" onClick={() => { onFocusGroup('structure'); setOpen(false); }}><Icons.Building size={15} /> Structure</button>
+        <button type="button" role="menuitem" onClick={() => { onFocusGroup('mep'); setOpen(false); }}><Icons.Activity size={15} /> MEP</button>
+        {model.storeys.length > 1 && (
+          <>
+            <div className="menu-sep" />
+            <label className="slider-row menu-slider">
+              <span>Explode levels</span>
+              <input type="range" min="0" max="1" step="0.01" value={explode} onChange={e => setExplode(parseFloat(e.target.value))} />
+              <span className="mono">{Math.round(explode * 100)}%</span>
+            </label>
+          </>
+        )}
+        <div className="menu-sep" />
+        <button type="button" role="menuitem" onClick={() => { onResetFilters(); setOpen(false); }}><Icons.Reset size={15} /> Reset view filters</button>
+      </FloatingPanel>
     </div>
   );
 }
@@ -694,19 +725,34 @@ function StartScreen({ onUpload, onLoadFile, onLoadSample, currentModel, onResum
             <Icons.ChevronRight size={15} style={{ transform: 'rotate(180deg)' }} /> Back to {currentModel.fileName}
           </button>
         )}
-        <section className="start-hero">
-          <h1>From IFC model to robot route.</h1>
-          <p>BIM2Bot Lab reads a building model in your browser, explains its semantics, turns it into maps a robot can plan on, and simulates robot fleets moving through it. Files never leave your machine.</p>
-          <div className="start-actions">
-            <button type="button" className="btn btn-primary btn-lg" onClick={onUpload}><Icons.Upload size={16} /> Open an IFC file</button>
-            <button type="button" className="btn btn-lg" onClick={() => onLoadSample(SAMPLES[0])}><Icons.Cube size={16} /> Try a sample model</button>
-          </div>
-          <button type="button" className="dropzone" data-over={over} onClick={onUpload}>
-            <Icons.Upload size={18} />
-            <span>Drop a <code>.ifc</code> file anywhere on this page</span>
-            <span className="muted">IFC2x3, IFC4 and IFC4.3, parsed locally with web-ifc</span>
-          </button>
-        </section>
+        <div className="start-top">
+          <section className="start-hero">
+            <h1>From IFC model to robot route.</h1>
+            <p>BIM2Bot Lab reads a building model in your browser, explains its semantics, turns it into maps a robot can plan on, and simulates robot fleets moving through it. Files never leave your machine.</p>
+            <div className="start-actions">
+              <button type="button" className="btn btn-primary btn-lg" onClick={onUpload}><Icons.Upload size={16} /> Open an IFC file</button>
+              <button type="button" className="btn btn-lg" onClick={() => onLoadSample(SAMPLES[0])}><Icons.Cube size={16} /> Try a sample model</button>
+            </div>
+            <button type="button" className="dropzone" data-over={over} onClick={onUpload}>
+              <Icons.Upload size={18} />
+              <span>Drop a <code>.ifc</code> file anywhere on this page</span>
+              <span className="muted">IFC2x3, IFC4 and IFC4.3, parsed locally with web-ifc</span>
+            </button>
+          </section>
+
+          <aside className="start-media" aria-label="Simulation previews">
+            <figure>
+              <img className="only-light" src="assets/images/home/sim-single.gif" width="560" height="350" loading="lazy" alt="A delivery robot crossing an office floor of the research centre at real speed, with its red LiDAR scan" />
+              <img className="only-dark" src="assets/images/home/sim-single-dark.gif" width="560" height="350" loading="lazy" alt="A delivery robot crossing an office floor of the research centre at real speed, with its red LiDAR scan" />
+              <figcaption><Icons.Robot size={14} /> Single robot: a planned route with live LiDAR</figcaption>
+            </figure>
+            <figure>
+              <img className="only-light" src="assets/images/home/sim-fleet.gif" width="560" height="350" loading="lazy" alt="Five delivery robots and people sharing one floor, each robot's LiDAR in its own colour" />
+              <img className="only-dark" src="assets/images/home/sim-fleet-dark.gif" width="560" height="350" loading="lazy" alt="Five delivery robots and people sharing one floor, each robot's LiDAR in its own colour" />
+              <figcaption><Icons.Robot size={14} /> Fleet: shared corridors, people and per-robot LiDAR</figcaption>
+            </figure>
+          </aside>
+        </div>
 
         <section className="start-samples" aria-label="Sample models">
           <h2>Sample models</h2>
@@ -720,7 +766,10 @@ function StartScreen({ onUpload, onLoadFile, onLoadSample, currentModel, onResum
                 </div>
                 <p>{smp.facts}</p>
                 <p className="sample-credit"><a href={smp.creditUrl} target="_blank" rel="noopener noreferrer">{smp.credit}</a></p>
-                <button type="button" className="btn btn-sm" onClick={() => onLoadSample(smp)}>{smp.bundled ? 'Open' : 'Download and open'}</button>
+                <div className="sample-actions">
+                  <button type="button" className="btn btn-sm" onClick={() => onLoadSample(smp)}>{smp.bundled ? 'Open' : 'Download and open'}</button>
+                  {smp.downloadable && <a className="btn btn-sm btn-ghost" href={smp.url} download={smp.file}><Icons.Download size={14} /> Download .ifc</a>}
+                </div>
               </article>
             ))}
           </div>
@@ -729,15 +778,33 @@ function StartScreen({ onUpload, onLoadFile, onLoadSample, currentModel, onResum
         <ol className="start-roadmap" aria-label="Features">
           <li data-state="live">
             <div className="rm-head"><Icons.Cube size={18} /><span>Explore</span></div>
-            <p>Inspect geometry, the spatial tree, property sets, materials and relationships. Section, measure and mark up.</p>
+            <ul className="rm-list">
+              <li>3D model and 2D floor plans side by side</li>
+              <li>Spatial tree, property sets, materials and relationships</li>
+              <li>Layer and category filters, section box, plan cut</li>
+              <li>Measure distances and pin issues</li>
+            </ul>
           </li>
           <li data-state="live">
             <div className="rm-head"><Icons.Route size={18} /><span>Navigate</span></div>
-            <p>Occupancy grids and a room graph from IFC, A* routes across levels, what-if obstacles and blocked doors, and cell-level traceability.</p>
+            <ul className="rm-list">
+              <li>Room graph and occupancy grids from IFC, traceable to every cell</li>
+              <li>Multi-level A* routes through stairs and lifts</li>
+              <li><span className="rm-new">New</span> Route comparison with time and energy estimates</li>
+              <li><span className="rm-new">New</span> Safety zones: no-go and slow areas</li>
+              <li><span className="rm-new">New</span> ROS 2 export: Nav2 map_server PGM + YAML and waypoints</li>
+              <li>What-if obstacles and blocked doors</li>
+            </ul>
           </li>
           <li data-state="live">
             <div className="rm-head"><Icons.Robot size={18} /><span>Simulate</span></div>
-            <p>Robot fleets with lift scheduling, corridor congestion heatmaps and human–robot encounter analysis.</p>
+            <ul className="rm-list">
+              <li>Robot fleets or custom missions, with people moving through</li>
+              <li>Lift scheduling, congestion heatmaps, near-miss log</li>
+              <li><span className="rm-new">New</span> Simulated 2D LiDAR on every robot (LaserScan JSON)</li>
+              <li><span className="rm-new">New</span> Door schedules with fleet or onboard re-planning</li>
+              <li><span className="rm-new">New</span> Batch experiments across seeds</li>
+            </ul>
           </li>
         </ol>
       </div>
@@ -1557,7 +1624,6 @@ function App() {
         onClose={onCloseModel}
         onSearch={onSearch}
         onOpenIntel={() => setModal('intel')}
-        onOpenSchema={() => { setShowHome(false); setWorkspace('explore'); setLeftTab('schema'); }}
         onHome={() => setShowHome(true)}
         onOpenHelp={() => setModal('help')}
         theme={theme}

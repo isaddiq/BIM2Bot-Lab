@@ -948,9 +948,12 @@
       });
       this.outlineMat.clippingPlanes = this._clipPlanes;
       this.edgeMat.clippingPlanes = this._clipPlanes;
-      this.overlays.forEach((o) => o.object.traverse((c) => {
-        if (c.material) c.material.clippingPlanes = this._clipPlanes;
-      }));
+      this.overlays.forEach((o) => {
+        if (o.object.userData.noClip) return;
+        o.object.traverse((c) => {
+          if (c.material) c.material.clippingPlanes = this._clipPlanes;
+        });
+      });
       this.invalidate();
     }
     /** Keep geometry below `y` (model coordinates). */
@@ -1176,7 +1179,7 @@
       object.name = `overlay:${name}`;
       this.overlayGroup.add(object);
       this.overlays.set(name, { object, pickable });
-      if (this._clipPlanes) object.traverse((o) => {
+      if (this._clipPlanes && !object.userData.noClip) object.traverse((o) => {
         if (o.material) o.material.clippingPlanes = this._clipPlanes;
       });
       this.invalidate();

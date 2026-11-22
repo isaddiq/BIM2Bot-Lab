@@ -963,7 +963,8 @@ class ThreeViewer {
     this.meshes.forEach(m => { m.material.clippingPlanes = this._clipPlanes; });
     this.outlineMat.clippingPlanes = this._clipPlanes;
     this.edgeMat.clippingPlanes = this._clipPlanes;
-    this.overlays.forEach(o => o.object.traverse(c => { if (c.material) c.material.clippingPlanes = this._clipPlanes; }));
+    // Overlays flagged userData.noClip (simulated robots, people, LiDAR) stay whole under a cut.
+    this.overlays.forEach(o => { if (o.object.userData.noClip) return; o.object.traverse(c => { if (c.material) c.material.clippingPlanes = this._clipPlanes; }); });
     this.invalidate();
   }
 
@@ -1196,7 +1197,7 @@ class ThreeViewer {
     object.name = `overlay:${name}`;
     this.overlayGroup.add(object);
     this.overlays.set(name, { object, pickable });
-    if (this._clipPlanes) object.traverse(o => { if (o.material) o.material.clippingPlanes = this._clipPlanes; });
+    if (this._clipPlanes && !object.userData.noClip) object.traverse(o => { if (o.material) o.material.clippingPlanes = this._clipPlanes; });
     this.invalidate();
   }
 

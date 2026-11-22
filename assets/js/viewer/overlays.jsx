@@ -242,120 +242,273 @@ function buildMarkersOverlay({ building, theme, start, goal, missions = [], miss
 }
 
 // ---------------------------------------------------------------------------
+// Robot models: procedural 3D models of real robot form factors, one per profile.
+//   wheeled  indoor delivery robot (round base, tray column, head with a face screen)
+//   compact  stacked-plate research robot in the style of a TurtleBot, with a spinning LiDAR
+//   legged   quadruped with a trotting gait
+//   wide     hospital logistics AMR carrying a stainless cabinet
+// All face +x, stand on y = 0 and are sized from the robot profile's width.
+// ---------------------------------------------------------------------------
+function robotKindOf(robot) {
+  if (!robot) return 'wheeled';
+  if (['wheeled', 'compact', 'legged', 'wide'].includes(robot.id)) return robot.id;
+  if (robot.canUseStairs) return 'legged';
+  if (robot.width < 0.5) return 'compact';
+  if (robot.width > 0.8) return 'wide';
+  return 'wheeled';
+}
+
+function buildRobotModel(kind, width, accentColor) {
+  const g = new THREE.Group();
+  const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.05, ...extra });
+  const accent = std(accentColor, { roughness: 0.4 });
+  const glow = std(accentColor, { emissive: accentColor, emissiveIntensity: 0.8 });
+  const white = std(0xf3f5f7, { roughness: 0.35 });
+  const light = std(0xc9ced4, { roughness: 0.4 });
+  const dark = std(0x2a2f36, { roughness: 0.6 });
+  const black = std(0x111317, { roughness: 0.3, metalness: 0.2 });
+  const steel = std(0xcfd5db, { roughness: 0.28, metalness: 0.65 });
+  const add = (geo, mat, x = 0, y = 0, z = 0, parent = g) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; };
+  const cyl = (rt, rb, h, seg = 40) => new THREE.CylinderGeometry(rt, rb, h, seg);
+  const wheels = [], spinners = [], legs = [];
+  const wheel = (r, w, x, z) => {
+    const m = add(cyl(r, r, w, 22), black, x, r, z);
+    m.rotation.x = Math.PI / 2;
+    // A hub cap so the wheel's rotation is visible.
+    const hub = add(new THREE.BoxGeometry(r * 1.3, w * 1.05, r * 0.25), light, 0, 0, 0, m);
+    hub.rotation.y = 0;
+    wheels.push({ mesh: m, r });
+  };
+
+  if (kind === 'compact') {
+    const R = width / 2;
+    add(cyl(R, R, 0.09), dark, 0, 0.065, 0);
+    const bump = add(new THREE.TorusGeometry(R, 0.012, 8, 48), accent, 0, 0.06, 0); bump.rotation.x = Math.PI / 2;
+    wheel(0.035, 0.025, 0, R + 0.01); wheel(0.035, 0.025, 0, -R - 0.01);
+    [[0.13, black], [0.26, accent], [0.38, black]].forEach(([y, mat]) => add(cyl(R * 0.94, R * 0.94, y === 0.26 ? 0.03 : 0.012), mat, 0, y, 0));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(cyl(0.008, 0.008, 0.26, 8), steel, sx * R * 0.55, 0.255, sz * R * 0.55);
+    const ring = add(new THREE.TorusGeometry(R * 0.94, 0.006, 6, 48), glow, 0, 0.137, 0); ring.rotation.x = Math.PI / 2;
+    add(cyl(0.045, 0.05, 0.04, 24), black, 0, 0.405, 0);
+    const top = add(cyl(0.04, 0.04, 0.03, 24), dark, 0, 0.44, 0);
+    add(new THREE.BoxGeometry(0.02, 0.012, 0.03), glow, 0.035, 0, 0, top);
+    spinners.push(top);
+    add(new THREE.BoxGeometry(0.035, 0.035, 0.1), black, R * 0.72, 0.41, 0);
+  } else if (kind === 'legged') {
+    const L = width * 2.0, BW = width * 0.72, BH = 0.16, hipY = 0.53;
+    add(new THREE.BoxGeometry(L, BH, BW), accent, 0, hipY + 0.06, 0);
+    add(new THREE.BoxGeometry(L * 0.82, 0.035, BW * 0.82), dark, 0, hipY + 0.06 + BH / 2 + 0.015, 0);
+    add(new THREE.BoxGeometry(0.12, 0.11, BW * 0.85), black, L / 2 + 0.04, hipY + 0.05, 0);
+    for (const z of [-0.06, 0.06]) add(new THREE.SphereGeometry(0.018, 12, 8), glow, L / 2 + 0.1, hipY + 0.06, z);
+    add(new THREE.BoxGeometry(0.1, 0.09, BW * 0.7), black, -L / 2 - 0.03, hipY + 0.05, 0);
+    const thighGeo = new THREE.BoxGeometry(0.065, 0.28, 0.065); thighGeo.translate(0, -0.14, 0);
+    const shinGeo = new THREE.BoxGeometry(0.04, 0.3, 0.04); shinGeo.translate(0, -0.15, 0);
+    const corners = [[1, 1, 0], [1, -1, Math.PI], [-1, 1, Math.PI], [-1, -1, 0]]; // FL, FR, RL, RR; diagonal pairs share a phase
+    corners.forEach(([sx, sz, off]) => {
+      const hip = new THREE.Group();
+      hip.position.set(sx * (L / 2 - 0.1), hipY, sz * (BW / 2 + 0.045));
+      g.add(hip);
+      add(new THREE.SphereGeometry(0.055, 14, 10), black, 0, 0, 0, hip);
+      const thigh = add(thighGeo, dark, 0, 0, 0, hip);
+      const knee = new THREE.Group(); knee.position.y = -0.28; thigh.add(knee);
+      add(new THREE.SphereGeometry(0.035, 12, 8), black, 0, 0, 0, knee);
+      const shin = add(shinGeo, light, 0, 0, 0, knee);
+      add(new THREE.SphereGeometry(0.03, 12, 8), black, 0, -0.3, 0, shin);
+      legs.push({ thigh, shin, off });
+    });
+  } else if (kind === 'wide') {
+    const L = Math.max(0.9, width), W = width;
+    add(new THREE.BoxGeometry(L, 0.2, W), dark, 0, 0.13, 0);
+    add(new THREE.BoxGeometry(L + 0.02, 0.045, W + 0.02), accent, 0, 0.1, 0);
+    add(new THREE.BoxGeometry(0.02, 0.05, W * 0.7), black, L / 2 + 0.012, 0.19, 0);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) wheel(0.05, 0.04, sx * L * 0.33, sz * (W / 2 + 0.005));
+    add(new THREE.BoxGeometry(L * 0.92, 1.12, W * 0.92), steel, 0, 0.24 + 0.56, 0);
+    for (const sz of [-1, 1]) add(new THREE.BoxGeometry(L * 0.88, 0.9, 0.008), accent, 0, 0.82, sz * (W * 0.46 + 0.002)); // side panels
+    for (const y of [0.52, 0.82, 1.1]) for (const sz of [-1, 1]) add(new THREE.BoxGeometry(L * 0.84, 0.012, 0.006), dark, 0, y, sz * (W * 0.46 + 0.003));
+    add(new THREE.BoxGeometry(L * 0.92, 0.035, W * 0.92), glow, 0, 1.375, 0);
+    add(new THREE.BoxGeometry(0.02, 0.2, 0.32), black, L * 0.46 + 0.011, 1.12, 0);
+    add(new THREE.BoxGeometry(0.04, 0.04, W * 0.8), light, -L * 0.46 - 0.05, 1.05, 0);
+  } else { // wheeled delivery robot
+    const R = width / 2;
+    add(cyl(R, R * 1.02, 0.22), dark, 0, 0.13, 0);
+    const bump = add(new THREE.TorusGeometry(R * 1.01, 0.022, 8, 48), accent, 0, 0.1, 0); bump.rotation.x = Math.PI / 2;
+    wheel(0.07, 0.04, 0, R * 0.98); wheel(0.07, 0.04, 0, -R * 0.98);
+    add(cyl(R * 0.97, R * 0.97, 0.05), black, 0, 0.265, 0);          // LiDAR window
+    add(cyl(R * 0.78, R * 0.9, 0.72), accent, 0, 0.29 + 0.36, 0);   // body shell in the robot's colour
+    [0.58, 0.86].forEach(y => add(cyl(R * 0.98, R * 0.98, 0.025), white, 0, y, 0)); // delivery trays
+    add(cyl(R * 0.64, R * 0.72, 0.26), white, 0, 1.14, 0);          // head
+    add(new THREE.BoxGeometry(0.02, 0.15, R * 0.95), black, R * 0.66, 1.14, 0);
+    for (const z of [-0.055, 0.055]) add(new THREE.SphereGeometry(0.02, 12, 8), glow, R * 0.675, 1.16, z);
+    const top = add(new THREE.TorusGeometry(R * 0.5, 0.012, 6, 40), glow, 0, 1.272, 0); top.rotation.x = Math.PI / 2;
+  }
+  return { group: g, wheels, spinners, legs, kind };
+}
+
+/** Advance wheel spin, LiDAR spin and leg gait for a robot that moved `dist` metres. */
+function animateRobotModel(model, dist, moving, t) {
+  model.wheels.forEach(w => { w.mesh.rotation.y -= dist / w.r; });
+  model.spinners.forEach(s => { s.rotation.y = t * 9; });
+  if (model.legs.length) {
+    model.phase = (model.phase || 0) + dist * (2 * Math.PI / 0.55);
+    const amp = moving ? 1 : 0;
+    model.legs.forEach(({ thigh, shin, off }) => {
+      const p = model.phase + off;
+      thigh.rotation.z = -0.55 + amp * 0.32 * Math.sin(p);
+      shin.rotation.z = 1.05 + amp * 0.4 * Math.max(0, Math.cos(p));
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Simulation agents (Version 3)
 // ---------------------------------------------------------------------------
 function buildAgentsOverlay(sim, opts = {}) {
   const group = new THREE.Group();
-  const robotGeo = new THREE.CylinderGeometry(1, 1, 1, 24);
-  const noseGeo = new THREE.ConeGeometry(0.5, 1, 12);
-  const personGeo = new THREE.CylinderGeometry(0.2, 0.2, 1.45, 14);
-  const headGeo = new THREE.SphereGeometry(0.16, 14, 10);
-  const r = sim.nav.radius;
+  group.userData.noClip = true;
+  const personGeo = new THREE.CapsuleGeometry(0.19, 1.0, 6, 14);
+  const headGeo = new THREE.SphereGeometry(0.13, 16, 12);
   const palette = opts.theme === 'dark' ? ROBOT_COLORS_DARK : ROBOT_COLORS;
+  const profile = sim.scenario.robot || null;
+  const kind = robotKindOf(profile);
+  const width = profile && profile.width ? profile.width : 0.6;
+
+  // Agents are drawn after the building with a fresh depth buffer: they stay visible through
+  // walls and slabs, yet each robot model still hides its own back faces correctly.
+  const depthReset = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0, 0, 0, 0], 3)), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false }));
+  depthReset.frustumCulled = false;
+  depthReset.renderOrder = 39;
+  depthReset.onBeforeRender = (renderer) => renderer.clearDepth();
+  group.add(depthReset);
+
   const robots = sim.robots.map(rb => {
     const g = new THREE.Group();
     const color = palette[rb.colorIndex] || rb.color;
-    const mat = new THREE.MeshLambertMaterial({ color });
-    const rad = Math.max(r * 0.9, 0.3);
-    const body = new THREE.Mesh(robotGeo, mat);
-    body.scale.set(rad, 0.6, rad);
-    body.position.y = 0.32;
-    const nose = new THREE.Mesh(noseGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }));
-    nose.scale.set(rad * 0.45, rad * 0.7, rad * 0.45);
-    nose.rotation.z = -Math.PI / 2;
-    nose.position.set(rad * 0.85, 0.45, 0);
-    // A beacon mast so robots stand out from people and furniture at any zoom.
-    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.3, 8), mat);
-    mast.position.y = 1.15;
-    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.17, 16, 12), new THREE.MeshBasicMaterial({ color }));
-    beacon.position.y = 1.85;
-    g.add(mast, beacon);
-    const ring = new THREE.Mesh(new THREE.RingGeometry(sim.scenario.safetyRadius - 0.03, sim.scenario.safetyRadius, 40), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }));
+    const model = buildRobotModel(kind, width, new THREE.Color(color));
+    g.add(model.group);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(sim.scenario.safetyRadius - 0.03, sim.scenario.safetyRadius, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }));
     ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.04;
-    g.add(body, nose, ring);
+    ring.position.y = 0.02;
+    g.add(ring);
     group.add(g);
-    return { g, rb };
+    return { g, rb, model, last: null };
   });
-  const personMat = new THREE.MeshLambertMaterial({ color: opts.theme === 'dark' ? 0xd6e2f0 : 0x2b3a4a });
+  const personMat = new THREE.MeshStandardMaterial({ color: opts.theme === 'dark' ? 0xd6e2f0 : 0x34465a, roughness: 0.7 });
   const humans = sim.humans.map(h => {
     const g = new THREE.Group();
     const body = new THREE.Mesh(personGeo, personMat);
-    body.position.y = 0.73;
+    body.position.y = 0.72;
     const head = new THREE.Mesh(headGeo, personMat);
-    head.position.y = 1.62;
+    head.position.y = 1.58;
     g.add(body, head);
     group.add(g);
     return { g, h };
   });
   const lifts = [...sim.lifts.values()].map(L => {
-    const car = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.1, 1.1), new THREE.MeshLambertMaterial({ color: 0x7a4fd1, transparent: true, opacity: 0.55, depthWrite: false }));
+    const car = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.1, 1.1), new THREE.MeshLambertMaterial({ color: 0x7a4fd1, transparent: true, opacity: 0.35, depthWrite: false }));
     group.add(car);
     return { car, L };
   });
+  const shown = (lid) => (opts.isShown ? opts.isShown(lid) : true);
   const update = () => {
-    robots.forEach(({ g, rb }) => {
+    const t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+    robots.forEach(item => {
+      const { g, rb, model } = item;
+      g.visible = shown(rb.levelId);
+      let dist = 0;
+      if (item.last && item.last.levelId === rb.levelId) dist = Math.hypot(rb.pos[0] - item.last.x, rb.pos[2] - item.last.z);
+      if (dist > 2) dist = 0; // a jump (lift, reset) is not driving
+      item.last = { x: rb.pos[0], z: rb.pos[2], levelId: rb.levelId };
       g.position.set(rb.pos[0], rb.pos[1], rb.pos[2]);
       g.rotation.y = -rb.heading;
+      animateRobotModel(model, dist, dist > 1e-4 || rb.state === 'moving', t);
       // Finished robots stay parked where they ended, dimmed.
       const parked = rb.state === 'done';
       if (g.userData.parked !== parked) {
         g.userData.parked = parked;
         g.traverse(o => {
-          if (!o.material) return;
+          if (!o.material || o === depthReset) return;
           if (o.userData.baseOpacity == null) o.userData.baseOpacity = o.material.opacity;
           o.material.opacity = o.userData.baseOpacity * (parked ? 0.35 : 1);
         });
       }
     });
     humans.forEach(({ g, h }) => {
+      g.visible = shown(h.levelId);
       g.position.set(h.pos[0], h.pos[1], h.pos[2]);
     });
     lifts.forEach(({ car, L }) => car.position.set(L.shaft[0], L.carY + 1.05, L.shaft[1]));
   };
-  // Agents stay readable through the X-ray model.
-  // Transparent pass + high render order: drawn after the ghosted model, so colours stay crisp.
-  group.traverse(o => { if (o.material) { o.material.depthTest = false; o.material.transparent = true; o.renderOrder = 40; } });
+  // Transparent pass with a high render order: drawn after the (possibly ghosted) model.
+  group.traverse(o => {
+    if (!o.material || o === depthReset) return;
+    o.material.transparent = true;
+    o.renderOrder = 40;
+  });
   update();
   return { group, update };
 }
 
 // ---------------------------------------------------------------------------
-// Simulated LiDAR: hit points at the sensor height plus faint beams, updated in place.
+// Simulated LiDAR: hit points at the sensor height plus faint beams, one layer per robot,
+// updated in place. A lone robot scans in red; in a fleet each robot's rays take its colour.
 // ---------------------------------------------------------------------------
+const LIDAR_RED = '#e0241b';
+const LIDAR_RED_DARK = '#ff5147';
+
+function lidarColor(colorIndex, fleetSize, theme) {
+  const dark = theme === 'dark';
+  if (fleetSize <= 1) return dark ? LIDAR_RED_DARK : LIDAR_RED;
+  const pal = dark ? ROBOT_COLORS_DARK : ROBOT_COLORS;
+  return pal[colorIndex % pal.length] || (dark ? LIDAR_RED_DARK : LIDAR_RED);
+}
+
 function buildLidarOverlay(opts = {}) {
   const group = new THREE.Group();
+  group.userData.noClip = true;
   const max = 1440;
-  const ptsGeo = new THREE.BufferGeometry();
-  ptsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 3), 3));
-  const color = opts.theme === 'dark' ? 0x4fd1bd : 0x0f8a78;
-  const points = new THREE.Points(ptsGeo, new THREE.PointsMaterial({ color, size: 5, sizeAttenuation: false, depthTest: false, transparent: true }));
-  const rayGeo = new THREE.BufferGeometry();
-  rayGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 6), 3));
-  const rays = new THREE.LineSegments(rayGeo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.18, depthTest: false }));
-  points.renderOrder = 42;
-  rays.renderOrder = 41;
-  points.frustumCulled = false;
-  rays.frustumCulled = false;
-  group.add(rays, points);
-  const update = (scan, y) => {
-    if (!scan) { ptsGeo.setDrawRange(0, 0); rayGeo.setDrawRange(0, 0); return; }
-    const n = Math.min(max, scan.ranges.length);
-    const p = ptsGeo.attributes.position.array, r = rayGeo.attributes.position.array;
-    let m = 0;
-    for (let b = 0; b < n; b++) {
-      const hx = scan.hits[b * 2], hz = scan.hits[b * 2 + 1];
-      r[b * 6] = scan.pose.x; r[b * 6 + 1] = y; r[b * 6 + 2] = scan.pose.z;
-      r[b * 6 + 3] = hx; r[b * 6 + 4] = y; r[b * 6 + 5] = hz;
-      if (scan.ranges[b] < scan.cfg.range) { p[m * 3] = hx; p[m * 3 + 1] = y; p[m * 3 + 2] = hz; m++; }
-    }
-    ptsGeo.attributes.position.needsUpdate = true;
-    rayGeo.attributes.position.needsUpdate = true;
-    ptsGeo.setDrawRange(0, m);
-    rayGeo.setDrawRange(0, n * 2);
+  const layers = new Map(); // robotId -> { points, rays, ptsGeo, rayGeo, color }
+  const makeLayer = (color) => {
+    const ptsGeo = new THREE.BufferGeometry();
+    ptsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 3), 3));
+    const points = new THREE.Points(ptsGeo, new THREE.PointsMaterial({ color, size: 5, sizeAttenuation: false, depthTest: false, transparent: true }));
+    const rayGeo = new THREE.BufferGeometry();
+    rayGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 6), 3));
+    const rays = new THREE.LineSegments(rayGeo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.22, depthTest: false }));
+    points.renderOrder = 42;
+    rays.renderOrder = 41;
+    points.frustumCulled = false;
+    rays.frustumCulled = false;
+    group.add(rays, points);
+    return { points, rays, ptsGeo, rayGeo, color };
   };
-  update(null);
+  const clear = (L) => { L.ptsGeo.setDrawRange(0, 0); L.rayGeo.setDrawRange(0, 0); };
+  // scans: [{ robotId, colorIndex, y, ranges, hits, pose, cfg }]; fleetSize picks red or robot colours.
+  const update = (scans, fleetSize = 1) => {
+    const seen = new Set();
+    (scans || []).forEach(scan => {
+      const id = scan.robotId != null ? scan.robotId : 0;
+      seen.add(id);
+      const color = lidarColor(scan.colorIndex || 0, fleetSize, opts.theme);
+      let L = layers.get(id);
+      if (L && L.color !== color) { L.points.material.color.set(color); L.rays.material.color.set(color); L.color = color; }
+      if (!L) { L = makeLayer(color); layers.set(id, L); }
+      const n = Math.min(max, scan.ranges.length);
+      const y = scan.y || 0;
+      const p = L.ptsGeo.attributes.position.array, r = L.rayGeo.attributes.position.array;
+      let m = 0;
+      for (let b = 0; b < n; b++) {
+        const hx = scan.hits[b * 2], hz = scan.hits[b * 2 + 1];
+        r[b * 6] = scan.pose.x; r[b * 6 + 1] = y; r[b * 6 + 2] = scan.pose.z;
+        r[b * 6 + 3] = hx; r[b * 6 + 4] = y; r[b * 6 + 5] = hz;
+        if (scan.ranges[b] < scan.cfg.range) { p[m * 3] = hx; p[m * 3 + 1] = y; p[m * 3 + 2] = hz; m++; }
+      }
+      L.ptsGeo.attributes.position.needsUpdate = true;
+      L.rayGeo.attributes.position.needsUpdate = true;
+      L.ptsGeo.setDrawRange(0, m);
+      L.rayGeo.setDrawRange(0, n * 2);
+    });
+    layers.forEach((L, id) => { if (!seen.has(id)) clear(L); });
+  };
   return { group, update };
 }
 
-Object.assign(window, { NAV_COLORS, buildMarkersOverlay, buildTopologyOverlay, buildRouteOverlay, buildGridOverlay, buildHeatOverlay, buildGridRouteOverlay, buildAgentsOverlay, buildLidarOverlay });
+Object.assign(window, { NAV_COLORS, buildMarkersOverlay, buildTopologyOverlay, buildRouteOverlay, buildGridOverlay, buildHeatOverlay, buildGridRouteOverlay, buildAgentsOverlay, buildRobotModel, animateRobotModel, robotKindOf, buildLidarOverlay, lidarColor, LIDAR_RED, LIDAR_RED_DARK });

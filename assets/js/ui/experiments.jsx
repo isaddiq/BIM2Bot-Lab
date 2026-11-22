@@ -31,8 +31,7 @@ function DoorScheduleEditor({ building, events, onChange, info, onInfo, onSelect
   }
   return (
     <div className="door-schedule">
-      <div className="rc-head"><strong>Door schedule</strong><IconButton icon={Icons.ChevronDown} label="Collapse door schedule" size={13} className="sm" onClick={() => setOpen(false)} /></div>
-      <p className="pane-note">Close doors during the run to test re-planning. People can still open them; robots cannot.</p>
+      <div className="rc-head"><strong>Door schedule</strong><InfoTip title="Door schedule">Close doors during the run to test re-planning. People can still open them; robots cannot. Choose whether robots hear about a closure from the fleet manager at once or only when they reach the door.</InfoTip><IconButton icon={Icons.ChevronDown} label="Collapse door schedule" size={13} className="sm" onClick={() => setOpen(false)} /></div>
       {events.map(ev => {
         const d = building.doors.get(ev.doorId);
         return (
@@ -78,29 +77,38 @@ function DoorScheduleEditor({ building, events, onChange, info, onInfo, onSelect
 // ---------------------------------------------------------------------------
 // Simulated LiDAR
 // ---------------------------------------------------------------------------
-function LidarSection({ simApi, model }) {
+function LidarSection({ simApi, model, theme }) {
   const sim = simApi.sim.current;
   const cfg = simApi.lidar;
   if (!sim || !sim.robots.length) return null;
   const set = (k, v, min, max) => simApi.setLidar({ [k]: Math.min(max, Math.max(min, Number(v))) });
-  const scan = sim.lidar;
-  const hitCount = scan ? scan.ranges.reduce((a, r) => a + (r < scan.cfg.range ? 1 : 0), 0) : 0;
-  const nearest = scan ? scan.ranges.reduce((a, r) => Math.min(a, r), Infinity) : null;
+  const scans = sim.lidarScans || (sim.lidar ? [sim.lidar] : []);
+  const fleet = sim.robots.length;
+  const stem = (s) => s.robotName.replace(/\s+/g, '-').toLowerCase();
   const save = () => {
-    if (!scan) return;
-    const doc = lidarScanJson(scan, { time: sim.time, extra: { robot: scan.robotName, model: model.fileName } });
-    download(JSON.stringify(doc, null, 2), `bim2bot-lidar-${scan.robotName.replace(/\s+/g, '-').toLowerCase()}-${Math.round(sim.time)}s.json`, 'application/json');
+    if (!scans.length) return;
+    const one = (scan) => lidarScanJson(scan, { time: sim.time, extra: { robot: scan.robotName, model: model.fileName } });
+    if (scans.length === 1) {
+      download(JSON.stringify(one(scans[0]), null, 2), `bim2bot-lidar-${stem(scans[0])}-${Math.round(sim.time)}s.json`, 'application/json');
+    } else {
+      download(JSON.stringify({ model: model.fileName, time: sim.time, scans: scans.map(one) }, null, 2), `bim2bot-lidar-fleet-${Math.round(sim.time)}s.json`, 'application/json');
+    }
   };
   return (
     <div className="nav-section">
-      <h3><Icons.Focus size={16} /> Simulated LiDAR</h3>
-      <label className="check-field"><input type="checkbox" checked={cfg.enabled} onChange={e => simApi.setLidar({ enabled: e.target.checked })} /> Show a 2D scan in the 3D view and on the plan</label>
+      <SectionTitle icon={Icons.Focus} title="Simulated LiDAR" info={<>
+        <p>A 2D scan from each robot, shown in the 3D view and on the plan. A single robot scans in red; in a fleet each robot’s rays match its colour.</p>
+        <p>Simulated, not live sensor data. Beams stop at the first grid cell ({Math.round(sim.nav.navMap.res * 100)} cm) whose geometry spans the sensor height, at closed doors and placed obstacles, and at people and other robots. Ranges are accurate to about one cell.</p>
+        <p>Download saves the current scan as sensor_msgs/LaserScan-shaped JSON.</p>
+      </>} />
+      <label className="check-field"><input type="checkbox" checked={cfg.enabled} onChange={e => simApi.setLidar({ enabled: e.target.checked })} /> Show LiDAR scans</label>
       {cfg.enabled && (
         <>
           <div className="field-grid">
             <label className="field">
               <span>Robot</span>
-              <select value={cfg.robotId} onChange={e => simApi.setLidar({ robotId: Number(e.target.value) })}>
+              <select value={String(cfg.robotId)} onChange={e => simApi.setLidar({ robotId: e.target.value === 'all' ? 'all' : Number(e.target.value) })}>
+                {fleet > 1 && <option value="all">All robots</option>}
                 {sim.robots.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
               </select>
             </label>
@@ -120,11 +128,22 @@ function LidarSection({ simApi, model }) {
             <label className="field"><span>Sensor height (m)</span><input type="number" min="0.05" max="2.1" step="0.05" value={cfg.mountHeight} onChange={e => set('mountHeight', e.target.value, 0.05, 2.1)} /></label>
             <label className="field"><span>Range noise σ (m)</span><input type="number" min="0" max="0.2" step="0.005" value={cfg.noise} onChange={e => set('noise', e.target.value, 0, 0.2)} /></label>
           </div>
-          {scan ? (
-            <p className="pane-note">{scan.robotName}: {hitCount} of {scan.ranges.length} beams return, nearest {Number.isFinite(nearest) ? `${nearest.toFixed(2)} m` : '—'}.</p>
-          ) : <p className="pane-note">No scan while the robot is in a lift or on stairs.</p>}
-          <p className="pane-note">Simulated, not live sensor data. Beams stop at the first grid cell ({Math.round(sim.nav.navMap.res * 100)} cm) whose geometry spans the sensor height, at closed doors and placed obstacles, and at people and other robots. Ranges are accurate to about one cell.</p>
-          <button type="button" className="btn btn-ghost btn-sm" disabled={!scan} onClick={save}><Icons.Download size={14} /> Download this scan (LaserScan JSON)</button>
+          {scans.length > 0 ? (
+            <ul className="lidar-list">
+              {scans.map(scan => {
+                const hits = scan.ranges.reduce((a, r) => a + (r < scan.cfg.range ? 1 : 0), 0);
+                const nearest = scan.ranges.reduce((a, r) => Math.min(a, r), Infinity);
+                return (
+                  <li key={scan.robotId}>
+                    <span className="robot-dot" style={{ background: lidarColor(scan.colorIndex || 0, fleet, theme) }} />
+                    <span className="lidar-name">{scan.robotName}</span>
+                    <span className="mono muted">{hits}/{scan.ranges.length} · {Number.isFinite(nearest) ? `${nearest.toFixed(2)} m` : '—'}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : <p className="pane-note">No scan while robots are in a lift or on stairs.</p>}
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!scans.length} onClick={save}><Icons.Download size={14} /> Download {scans.length > 1 ? 'these scans' : 'this scan'} (LaserScan JSON)</button>
         </>
       )}
     </div>
@@ -247,10 +266,12 @@ function ExperimentsSection({ model, building, navMap, baseScenario, missionMode
 
   return (
     <div className="nav-section">
-      <h3><Icons.Table size={16} /> Experiments</h3>
+      <SectionTitle icon={Icons.Table} title="Experiments" info={<>
+        <p>Run the scenario above many times, varying one setting across several seeds, and compare the results.</p>
+        <p>Everything else comes from the scenario above, including what-if changes and custom missions. Results show the mean and sample standard deviation across seeds.</p>
+      </>} />
       {!open ? (
         <>
-          <p className="pane-note">Run the scenario above many times, varying one setting across several seeds, and compare the results.</p>
           <button type="button" className="btn btn-sm" onClick={() => setOpen(true)}><Icons.Columns size={14} /> Set up an experiment</button>
         </>
       ) : (
@@ -267,7 +288,7 @@ function ExperimentsSection({ model, building, navMap, baseScenario, missionMode
           {!param.fixed && (
             <label className="field"><span>Values (up to 8, comma-separated)</span><input type="text" value={text} disabled={running} onChange={e => setText(e.target.value)} /></label>
           )}
-          <p className="pane-note">{values.length ? `${plural(total, 'run')}: ${values.map(valueLabel).join(', ')} × seeds ${(baseScenario().seed || 0)}–${(baseScenario().seed || 0) + reps - 1}.` : 'Enter at least one value.'} Everything else comes from the scenario above, including what-if changes{missionMode ? ' and custom missions' : ''}.</p>
+          <p className="pane-note">{values.length ? `${plural(total, 'run')}: ${values.map(valueLabel).join(', ')} × seeds ${(baseScenario().seed || 0)}–${(baseScenario().seed || 0) + reps - 1}.` : 'Enter at least one value.'}</p>
           <div className="sim-actions">
             {!running
               ? <button type="button" className="btn btn-primary btn-sm" disabled={disabled || !values.length} onClick={run}><Icons.Play size={14} /> Run experiment</button>
