@@ -349,6 +349,7 @@ function TopBar({ model, workspace, onWorkspace, onUpload, onLoadSample, onClose
       <div className="topbar-tools">
         <IconButton icon={Icons.Dashboard} label="Building intelligence" disabled={!model} onClick={onOpenIntel} />
         <IconButton icon={Icons.Schema} label="Schema explorer" disabled={!model} onClick={onOpenSchema} />
+        <IconButton icon={Icons.Activity} label="Visitor statistics" aria-controls="vc-popover" onClick={() => document.getElementById('vc-popover')?.classList.toggle('vc-open')} />
         <IconButton icon={theme === 'dark' ? Icons.Sun : Icons.Moon} label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'} onClick={onToggleTheme} />
         <IconButton icon={Icons.Help} label="Shortcuts and help" shortcut="?" onClick={onOpenHelp} />
         <div className="menu-anchor" ref={menuRef}>
@@ -361,7 +362,6 @@ function TopBar({ model, workspace, onWorkspace, onUpload, onLoadSample, onClose
               <div className="menu-sep" />
               <a role="menuitem" href={SOURCE_REPO_URL} target="_blank" rel="noopener noreferrer"><Icons.Github size={15} /> Source code <Icons.External size={12} className="trail" /></a>
               <a role="menuitem" href={AUTHOR_URL} target="_blank" rel="noopener noreferrer"><Icons.Globe size={15} /> Author <Icons.External size={12} className="trail" /></a>
-              <button type="button" role="menuitem" onClick={() => { setMenu(false); document.getElementById('vc-popover')?.classList.toggle('vc-open'); }}><Icons.Activity size={15} /> Visitor statistics</button>
             </div>
           )}
         </div>
@@ -726,17 +726,17 @@ function StartScreen({ onUpload, onLoadFile, onLoadSample, currentModel, onResum
           </div>
         </section>
 
-        <ol className="start-roadmap" aria-label="Roadmap">
+        <ol className="start-roadmap" aria-label="Features">
           <li data-state="live">
-            <div className="rm-head"><Icons.Cube size={18} /><span>Explore</span><span className="rm-tag">Version 1, available</span></div>
+            <div className="rm-head"><Icons.Cube size={18} /><span>Explore</span></div>
             <p>Inspect geometry, the spatial tree, property sets, materials and relationships. Section, measure and mark up.</p>
           </li>
           <li data-state="live">
-            <div className="rm-head"><Icons.Route size={18} /><span>Navigate</span><span className="rm-tag">Version 2, available</span></div>
+            <div className="rm-head"><Icons.Route size={18} /><span>Navigate</span></div>
             <p>Occupancy grids and a room graph from IFC, A* routes across levels, what-if obstacles and blocked doors, and cell-level traceability.</p>
           </li>
           <li data-state="live">
-            <div className="rm-head"><Icons.Robot size={18} /><span>Simulate</span><span className="rm-tag">Version 3, available</span></div>
+            <div className="rm-head"><Icons.Robot size={18} /><span>Simulate</span></div>
             <p>Robot fleets with lift scheduling, corridor congestion heatmaps and human–robot encounter analysis.</p>
           </li>
         </ol>

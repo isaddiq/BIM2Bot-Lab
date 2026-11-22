@@ -140,16 +140,16 @@ const appScripts = [
   'assets/js/compiled/app.js',
 ];
 
+// Download all scripts in parallel; async=false keeps them executing in list order.
 try {
-  for (const src of appScripts) {
-    await new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = src;
-      script.onload = resolve;
-      script.onerror = () => reject(new Error(`Failed to load ${src}`));
-      document.head.appendChild(script);
-    });
-  }
+  await Promise.all(appScripts.map(src => new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = false;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  })));
 } catch (err) {
   document.getElementById('root').innerHTML = '<div class="boot-error"><h1>BIM2Bot Lab could not start</h1><p>' + err.message + '. Serve the folder over HTTP (for example <code>npx serve .</code>) instead of opening the file directly.</p></div>';
 }
@@ -157,8 +157,9 @@ try {
 </head>
 <body>
 <main id="root">
-  <!-- Shown while the app loads and read by crawlers that do not run JavaScript; React replaces it on mount. -->
-  <div class="boot-screen">
+  <!-- Hidden summary for crawlers that do not run JavaScript; React replaces it on mount. -->
+  <noscript><div class="boot-error"><h1>BIM2Bot Lab</h1><p>BIM2Bot Lab needs JavaScript to read IFC files in your browser.</p></div></noscript>
+  <div class="boot-screen" hidden>
     <div class="boot-card">
       <img src="assets/logos/bim2bot-mark.svg" alt="" width="48" height="48" />
       <h1>BIM2Bot Lab</h1>
@@ -169,8 +170,6 @@ try {
         <li><strong>Navigate:</strong> build room graphs and occupancy grids from spaces, doors and stairs, and plan multi-level A* routes.</li>
         <li><strong>Simulate:</strong> run robot fleets with delivery missions, lift scheduling, congestion and human–robot encounters.</li>
       </ul>
-      <p class="boot-status" role="status">Loading the lab…</p>
-      <noscript><p class="boot-status">BIM2Bot Lab needs JavaScript to read IFC files in your browser.</p></noscript>
       <p class="boot-links"><a href="https://github.com/isaddiq/BIM2Bot-Lab">Source code on GitHub</a> · MIT licence</p>
     </div>
   </div>
@@ -182,7 +181,7 @@ try {
     <button type="button" class="vc-pop-close" onclick="document.getElementById('vc-popover').classList.remove('vc-open')" aria-label="Close visitor statistics">&times;</button>
   </div>
   <a href="https://info.flagcounter.com/UsaK" target="_blank" rel="noopener noreferrer" class="vc-flag-link" title="Full analytics">
-    <img src="https://s05.flagcounter.com/count2/UsaK/bg_FFFFFF/txt_000000/border_CCCCCC/columns_2/maxflags_10/viewers_0/labels_0/pageviews_0/flags_0/percent_0/" alt="Flag Counter" border="0" class="vc-flag-img" loading="lazy" />
+    <img src="https://s05.flagcounter.com/count2/UsaK/bg_FFFFFF/txt_000000/border_CCCCCC/columns_2/maxflags_10/viewers_0/labels_0/pageviews_0/flags_0/percent_0/" alt="Flag Counter" border="0" class="vc-flag-img" loading="eager" fetchpriority="low" referrerpolicy="no-referrer-when-downgrade" />
   </a>
 </div>
 </body>
