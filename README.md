@@ -27,7 +27,14 @@
 [Architecture](#architecture) ·
 [Run locally](#run-locally)
 
-![1795353108649](image/README/1795353108649.png)
+<br />
+
+<a href="https://isaddiq.github.io/BIM2Bot-Lab/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/images/readme/home-page-dark.webp" />
+    <img src="assets/images/readme/home-page.webp" alt="BIM2Bot Lab home page: Open an IFC file, the interactive 3D simulation previews and the three sample models" width="100%" />
+  </picture>
+</a>
 
 </div>
 
