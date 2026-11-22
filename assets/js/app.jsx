@@ -708,9 +708,60 @@ function LayoutSwitch({ layout, setLayout }) {
 }
 
 // ---------------------------------------------------------------------------
+// Start-page simulation preview: a recorded run on one floor, rotatable in 3D.
+// The GIF shows while the data loads, and stays if WebGL is unavailable.
+// ---------------------------------------------------------------------------
+const previewFetches = new Map();
+const fetchPreviewJson = (url) => {
+  if (!previewFetches.has(url)) {
+    const req = fetch(url).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+    req.catch(() => previewFetches.delete(url));
+    previewFetches.set(url, req);
+  }
+  return previewFetches.get(url);
+};
+
+function SimPreview({ src, gif, gifDark, alt, theme }) {
+  const hostRef = useRef(null);
+  const [state, setState] = useState('loading');
+  const [hint, setHint] = useState(true);
+  useEffect(() => {
+    let live = true;
+    let inst = null;
+    (async () => {
+      try {
+        if (!window.mountSimPreview) throw new Error('Preview module missing');
+        const traj = await fetchPreviewJson(src);
+        const level = await fetchPreviewJson(src.replace(/[^/]+$/, traj.geo));
+        if (!live || !hostRef.current) return;
+        inst = window.mountSimPreview(hostRef.current, traj, level, { theme, onInteract: () => setHint(false) });
+        setState('ready');
+        setTimeout(() => { if (live) setHint(false); }, 6000);
+      } catch (err) {
+        console.warn('Simulation preview unavailable, showing the GIF instead:', err);
+        if (live) setState('failed');
+      }
+    })();
+    return () => { live = false; if (inst) inst.dispose(); };
+  }, [src, theme]);
+  return (
+    <div className="sim-preview" data-state={state} role="img" aria-label={`${alt}. Drag to rotate the 3D view.`}>
+      <div ref={hostRef} className="sim-preview-3d" />
+      {state !== 'ready' && (
+        <>
+          <img className="only-light" src={gif} width="560" height="350" loading="lazy" alt="" />
+          <img className="only-dark" src={gifDark} width="560" height="350" loading="lazy" alt="" />
+        </>
+      )}
+      {state === 'ready' && hint && <span className="sim-preview-hint"><Icons.Refresh size={13} /> Drag to rotate · pinch or Ctrl+scroll to zoom</span>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Start screen
 // ---------------------------------------------------------------------------
-function StartScreen({ onUpload, onLoadFile, onLoadSample, currentModel, onResume }) {
+function StartScreen({ onUpload, onLoadFile, onLoadSample, currentModel, onResume, theme }) {
   const [over, setOver] = useState(false);
   return (
     <div className="start" onDragOver={e => { e.preventDefault(); setOver(true); }} onDragLeave={e => { if (e.currentTarget === e.target) setOver(false); }} onDrop={e => {
@@ -742,13 +793,13 @@ function StartScreen({ onUpload, onLoadFile, onLoadSample, currentModel, onResum
 
           <aside className="start-media" aria-label="Simulation previews">
             <figure>
-              <img className="only-light" src="assets/images/home/sim-single.gif" width="560" height="350" loading="lazy" alt="A delivery robot crossing an office floor of the research centre at real speed, with its red LiDAR scan" />
-              <img className="only-dark" src="assets/images/home/sim-single-dark.gif" width="560" height="350" loading="lazy" alt="A delivery robot crossing an office floor of the research centre at real speed, with its red LiDAR scan" />
+              <SimPreview src="assets/images/home/preview-single.json" gif="assets/images/home/sim-single.gif" gifDark="assets/images/home/sim-single-dark.gif" theme={theme}
+                alt="A delivery robot crossing an office floor of the research centre at real speed, with its red LiDAR scan" />
               <figcaption><Icons.Robot size={14} /> Single robot: a planned route with live LiDAR</figcaption>
             </figure>
             <figure>
-              <img className="only-light" src="assets/images/home/sim-fleet.gif" width="560" height="350" loading="lazy" alt="Five delivery robots and people sharing one floor, each robot's LiDAR in its own colour" />
-              <img className="only-dark" src="assets/images/home/sim-fleet-dark.gif" width="560" height="350" loading="lazy" alt="Five delivery robots and people sharing one floor, each robot's LiDAR in its own colour" />
+              <SimPreview src="assets/images/home/preview-fleet.json" gif="assets/images/home/sim-fleet.gif" gifDark="assets/images/home/sim-fleet-dark.gif" theme={theme}
+                alt="Five delivery robots and people sharing one floor, each robot's LiDAR in its own colour" />
               <figcaption><Icons.Robot size={14} /> Fleet: shared corridors, people and per-robot LiDAR</figcaption>
             </figure>
           </aside>
@@ -1682,7 +1733,7 @@ function App() {
           collapsed={layout.bottomCollapsed} onToggleCollapsed={toggleBottom} viewerRef={viewerRef} secondaryReady={secondaryReady}
         />
 
-        {(!model || showHome) && !loading && <StartScreen onUpload={onUpload} onLoadFile={loadIfcFile} onLoadSample={loadSample} currentModel={model} onResume={() => setShowHome(false)} />}
+        {(!model || showHome) && !loading && <StartScreen onUpload={onUpload} onLoadFile={loadIfcFile} onLoadSample={loadSample} currentModel={model} onResume={() => setShowHome(false)} theme={theme} />}
         {loading && <LoadingOverlay fileName={loading.fileName} progress={loading.progress} phase={loading.phase} log={log} />}
       </div>
 

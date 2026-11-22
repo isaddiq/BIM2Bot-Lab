@@ -1311,13 +1311,23 @@ input[type="range"] { width: 100%; height: 18px; margin: 0; accent-color: var(--
 .start-top .start-hero { max-width: none; }
 .start-media { display: grid; gap: 12px; align-content: start; }
 .start-media figure { margin: 0; }
-/* The GIFs are rendered on the page background; a soft mask fades their edges into the grid. */
-.start-media img {
-  display: block; width: 100%; height: auto; aspect-ratio: 8 / 5; object-fit: cover;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent), linear-gradient(to bottom, transparent, #000 12%, #000 88%, transparent);
+/* Previews sit on the page background; a soft mask fades their edges into the grid. */
+.sim-preview {
+  position: relative; aspect-ratio: 8 / 5; width: 100%;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent), linear-gradient(to bottom, transparent, #000 9%, #000 91%, transparent);
   -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent), linear-gradient(to bottom, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent), linear-gradient(to bottom, transparent, #000 9%, #000 91%, transparent);
   mask-composite: intersect;
+}
+.sim-preview-3d { position: absolute; inset: 0; cursor: grab; }
+.sim-preview-3d:active { cursor: grabbing; }
+.sim-preview-3d .preview-canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; }
+.sim-preview img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
+.sim-preview-hint {
+  position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  font-size: 11.5px; color: var(--ink-2); background: color-mix(in srgb, var(--surface) 85%, transparent);
+  border: 1px solid var(--line); pointer-events: none; white-space: nowrap;
 }
 :root[data-theme="dark"] .start-media .only-light, :root:not([data-theme="dark"]) .start-media .only-dark { display: none; }
 .start-media figcaption { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 2px 12px 0; font-size: 12.5px; color: var(--ink-2); }

@@ -247,6 +247,41 @@
           start(scenario);
           return true;
         },
+        // Geometry of one storey (model coordinates), merged per element colour.
+        exportLevel: (levelName) => {
+          const lv = building && building.levels.find((l) => l.name === levelName);
+          if (!lv || !model) return null;
+          const groups = /* @__PURE__ */ new Map();
+          model.elements.forEach((el) => {
+            if (el.isType || !el.geometry || !el.geometry.positions || !el.storey || el.storey.expressId !== lv.storeyId) return;
+            if (/^Ifc(Space|OpeningElement)/.test(el.ifcClass)) return;
+            const g = el.geometry;
+            const c = g.color || { r: 0.8, g: 0.8, b: 0.8, a: 1 };
+            const key = [c.r, c.g, c.b, c.a].map((v) => Math.round(v * 255)).join(",");
+            let list = groups.get(key);
+            if (!list) groups.set(key, list = [{ c: [c.r, c.g, c.b, c.a], p: [], i: [] }]);
+            let grp = list[list.length - 1];
+            if (grp.p.length / 3 + g.positions.length / 3 > 65e3) list.push(grp = { c: grp.c, p: [], i: [] });
+            const base = grp.p.length / 3;
+            for (let k = 0; k < g.positions.length; k++) grp.p.push(g.positions[k]);
+            for (let k = 0; k < g.indices.length; k++) grp.i.push(g.indices[k] + base);
+          });
+          return { levelId: lv.id, floorY: lv.floorY, groups: [...groups.values()].flat() };
+        },
+        // Poses of every agent and the current LiDAR hits, for recorded previews.
+        poses: () => {
+          const sim = simRef.current;
+          if (!sim) return null;
+          return {
+            t: sim.time,
+            kind: robotKindOf(sim.scenario.robot),
+            width: sim.scenario.robot ? sim.scenario.robot.width : 0.6,
+            safety: sim.scenario.safetyRadius,
+            robots: sim.robots.map((r) => ({ x: r.pos[0], y: r.pos[1], z: r.pos[2], h: r.heading, l: r.levelId, s: r.state, c: r.colorIndex })),
+            humans: sim.humans.map((h) => ({ x: h.pos[0], y: h.pos[1], z: h.pos[2], l: h.levelId })),
+            scans: (sim.lidarScans || []).map((sc) => ({ id: sc.robotId, y: sc.y, x: sc.pose.x, z: sc.pose.z, l: sc.pose.levelId, range: sc.cfg.range, hits: Array.from(sc.hits), ranges: Array.from(sc.ranges) }))
+          };
+        },
         look: (background) => {
           const v = viewerRef.current;
           if (!v) return false;

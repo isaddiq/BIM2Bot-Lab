@@ -11,7 +11,7 @@
   "author": "Saddiq (https://isaddiq.github.io/)",
   "license": "MIT",
   "scripts": {
-    "build": "npx --yes esbuild@0.21.5 assets/js/core/schema.jsx assets/js/core/ifcloader.jsx assets/js/core/building.jsx assets/js/core/navmap.jsx assets/js/core/simulation.jsx assets/js/core/plan.jsx assets/js/core/robotics.jsx assets/js/viewer/viewer.jsx assets/js/viewer/overlays.jsx assets/js/viewer/viewcube.jsx assets/js/ui/icons.jsx assets/js/ui/panels.jsx assets/js/ui/navigation.jsx assets/js/ui/experiments.jsx assets/js/ui/simulate.jsx assets/js/ui/planview.jsx assets/js/app.jsx --outbase=assets/js --outdir=assets/js/compiled --format=iife --target=es2018 --jsx-factory=React.createElement --jsx-fragment=React.Fragment --log-level=warning",
+    "build": "npx --yes esbuild@0.21.5 assets/js/core/schema.jsx assets/js/core/ifcloader.jsx assets/js/core/building.jsx assets/js/core/navmap.jsx assets/js/core/simulation.jsx assets/js/core/plan.jsx assets/js/core/robotics.jsx assets/js/viewer/viewer.jsx assets/js/viewer/overlays.jsx assets/js/viewer/viewcube.jsx assets/js/viewer/preview.jsx assets/js/ui/icons.jsx assets/js/ui/panels.jsx assets/js/ui/navigation.jsx assets/js/ui/experiments.jsx assets/js/ui/simulate.jsx assets/js/ui/planview.jsx assets/js/app.jsx --outbase=assets/js --outdir=assets/js/compiled --format=iife --target=es2018 --jsx-factory=React.createElement --jsx-fragment=React.Fragment --log-level=warning",
     "serve": "npx --yes serve ."
   }
 }
