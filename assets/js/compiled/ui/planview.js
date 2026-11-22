@@ -7,8 +7,12 @@
     { id: "inspect", label: "Inspect", icon: "Info", title: "Click a cell to trace its state to an IFC element" }
   ];
   const GRID_PLAN_RGBA = {
-    light: [[0, 0, 0, 0], [47, 158, 143, 34], [198, 47, 58, 150], [224, 86, 15, 60], [47, 158, 143, 170], [224, 86, 15, 230], [120, 16, 28, 220]],
-    dark: [[0, 0, 0, 0], [79, 209, 189, 34], [255, 107, 116, 150], [255, 138, 61, 60], [79, 209, 189, 170], [255, 138, 61, 230], [190, 40, 55, 220]]
+    light: [[0, 0, 0, 0], [47, 158, 143, 34], [198, 47, 58, 150], [224, 86, 15, 60], [47, 158, 143, 170], [224, 86, 15, 230], [120, 16, 28, 220], [150, 40, 150, 120]],
+    dark: [[0, 0, 0, 0], [79, 209, 189, 34], [255, 107, 116, 150], [255, 138, 61, 60], [79, 209, 189, 170], [255, 138, 61, 230], [190, 40, 55, 220], [214, 112, 214, 120]]
+  };
+  const ZONE_STYLE = {
+    nogo: { light: ["rgba(150,40,150,0.95)", "rgba(150,40,150,0.10)"], dark: ["rgba(214,112,214,0.95)", "rgba(214,112,214,0.12)"] },
+    slow: { light: ["rgba(176,116,0,0.95)", "rgba(201,133,0,0.12)"], dark: ["rgba(237,161,0,0.95)", "rgba(237,161,0,0.12)"] }
   };
   function fitLabel(ctx, name, area, bw, bh) {
     const words = name.split(/\s+/);
@@ -115,8 +119,10 @@
       const ctx = cv.getContext("2d");
       const img = ctx.createImageData(g.w, g.h);
       const pal = GRID_PLAN_RGBA[p.theme === "dark" ? "dark" : "light"];
+      const slowCol = p.theme === "dark" ? [237, 161, 0, 70] : [201, 133, 0, 70];
       for (let k = 0; k < st.state.length; k++) {
-        const col = pal[st.state[k]];
+        const s = st.state[k];
+        const col = st.slow && st.slow[k] < 1 && (s === CELL.FREE || s === CELL.DOOR || s === CELL.INFLATED) ? slowCol : pal[s];
         img.data[k * 4] = col[0];
         img.data[k * 4 + 1] = col[1];
         img.data[k * 4 + 2] = col[2];
@@ -318,6 +324,43 @@
           ctx.globalAlpha = 1;
         }
       }
+      (p.zones || []).forEach((zn) => {
+        if (zn.levelId !== level.id) return;
+        const [xa, ya] = toScreen(Math.min(zn.x0, zn.x1), Math.min(zn.z0, zn.z1));
+        const [xb, yb] = toScreen(Math.max(zn.x0, zn.x1), Math.max(zn.z0, zn.z1));
+        const [stroke, fill] = ZONE_STYLE[zn.kind === "nogo" ? "nogo" : "slow"][theme2 === "dark" ? "dark" : "light"];
+        ctx.fillStyle = fill;
+        ctx.fillRect(xa, ya, xb - xa, yb - ya);
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.setLineDash(zn.kind === "nogo" ? [] : [6, 4]);
+        ctx.strokeRect(xa, ya, xb - xa, yb - ya);
+        ctx.setLineDash([]);
+        if (xb - xa > 40 && yb - ya > 16) {
+          ctx.font = '600 11px "IBM Plex Sans", sans-serif';
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+          ctx.fillStyle = stroke;
+          ctx.fillText(zn.kind === "nogo" ? "No-go" : `Slow ${Math.round((zn.factor || 0.5) * 100)}%`, xa + 5, ya + 4);
+        }
+      });
+      if (p.pendingZone && p.pendingZone.levelId === level.id) {
+        const [x, y] = toScreen(p.pendingZone.x, p.pendingZone.z);
+        ctx.strokeStyle = col.accent;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x - 8, y);
+        ctx.lineTo(x + 8, y);
+        ctx.moveTo(x, y - 8);
+        ctx.lineTo(x, y + 8);
+        ctx.stroke();
+        if (hover2) {
+          const [hx, hy] = toScreen(hover2.x, hover2.z);
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(Math.min(x, hx), Math.min(y, hy), Math.abs(hx - x), Math.abs(hy - y));
+          ctx.setLineDash([]);
+        }
+      }
       (p.obstacles || []).forEach((o) => {
         if (o.levelId !== level.id) return;
         const [x0, y0] = toScreen(o.x - o.size / 2, o.z - o.size / 2);
@@ -426,6 +469,27 @@
         ctx.lineWidth = 2;
         const s = Math.max(6, g.res * sc);
         ctx.strokeRect(x0 - (s - g.res * sc) / 2, y0 - (s - g.res * sc) / 2, s, s);
+      }
+      const scan = sim && sim.lidar;
+      if (scan && scan.pose.levelId === level.id) {
+        const [ox, oy] = toScreen(scan.pose.x, scan.pose.z);
+        ctx.strokeStyle = col.teal;
+        ctx.globalAlpha = 0.16;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let b = 0; b < scan.ranges.length; b++) {
+          const [hx, hy] = toScreen(scan.hits[b * 2], scan.hits[b * 2 + 1]);
+          ctx.moveTo(ox, oy);
+          ctx.lineTo(hx, hy);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = col.teal;
+        for (let b = 0; b < scan.ranges.length; b++) {
+          if (scan.ranges[b] >= scan.cfg.range) continue;
+          const [hx, hy] = toScreen(scan.hits[b * 2], scan.hits[b * 2 + 1]);
+          ctx.fillRect(hx - 1.5, hy - 1.5, 3, 3);
+        }
       }
       if (sim) {
         const pal = theme2 === "dark" ? ROBOT_COLORS_DARK : ROBOT_COLORS;

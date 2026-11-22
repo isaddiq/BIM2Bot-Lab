@@ -923,6 +923,20 @@ input[type="range"] { width: 100%; height: 18px; margin: 0; accent-color: var(--
 .gl-obstacle { background: var(--danger); }
 .gl-user { background: var(--signal-bright); }
 .gl-blocked { background: #78101c; }
+.gl-zone { background: rgba(150, 40, 150, 0.75); }
+.gl-slow { background: rgba(201, 133, 0, 0.35); box-shadow: inset 0 0 0 1.5px #b07400; }
+.cell-card[data-state="7"] { border-left-color: #962896; }
+
+/* Route comparison, door schedule, experiments */
+.route-compare { margin: 8px 0 4px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.rc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
+.rc-table { margin: 0 -12px 8px; overflow-x: auto; }
+.route-compare tr[data-muted="true"] td:first-child { color: var(--ink-3); }
+.door-toggle { margin-top: 8px; }
+.door-schedule { margin-top: 10px; padding: 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-card); }
+.exp-table { margin-top: 6px; }
+.exp-table td.exp-bar { width: 22%; padding-left: 4px; }
+.exp-bar > span { display: block; height: 8px; min-width: 2px; border-radius: 4px; background: var(--accent); }
 .cell-card { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: var(--r-card); background: var(--surface-2); }
 .cell-card[data-state="2"], .cell-card[data-state="6"] { border-left-color: var(--danger); }
 .cell-card[data-state="3"], .cell-card[data-state="5"] { border-left-color: var(--signal-bright); }

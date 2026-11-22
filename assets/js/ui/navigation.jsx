@@ -119,6 +119,17 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
           </div>
 
           <div className="nav-section">
+            <h3><Icons.Download size={16} /> Export for ROS 2</h3>
+            {!navState ? <p className="pane-note"><span className="spinner" /> Waiting for the occupancy grids…</p>
+              : <RosExportSection navState={navState} model={model} gridRoute={grid ? gridRoute : null} />}
+          </div>
+
+          <div className="nav-section">
+            <h3><Icons.Alert size={16} /> Safety zones</h3>
+            <SafetyZonesSection nav={nav} navState={navState} />
+          </div>
+
+          <div className="nav-section">
             <h3><Icons.Ban size={16} /> What-if blocking</h3>
             {nav.blocked.size === 0 ? (
               <p className="pane-note">Block a door from the inspector or from a route step to see how the robot reroutes. Place obstacles on the occupancy map with the tools above.</p>
@@ -239,18 +250,150 @@ function GridRouteCard({ route, navState, building, nav, onFrameRoute }) {
           </li>
         ))}
       </ol>
-      <p className="pane-note pad-x">8-connected A* without corner cutting, smoothed by line of sight. Cost rises within 0.4 m of the inflation limit to keep the robot mid-corridor.</p>
+      <p className="pane-note pad-x">8-connected A* without corner cutting, smoothed by line of sight. Cost rises within 0.4 m of the inflation limit to keep the robot mid-corridor{nav.zones.some(z => z.kind === 'slow') ? ', and inside slow zones in proportion to the lower speed' : ''}.</p>
       <div className="route-foot">
         <button type="button" className="btn btn-sm" onClick={onFrameRoute}><Icons.Focus size={14} /> Frame route</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={nav.clearRoute}>Clear</button>
       </div>
+      <RouteCompare navState={navState} route={route} from={nav.startPt} to={nav.goalPt} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Route comparison: alternatives for the same start and goal, computed on demand.
+// ---------------------------------------------------------------------------
+function RouteCompare({ navState, route, from, to }) {
+  const [open, setOpen] = useState(false);
+  const [params, setParams] = useState(() => ({ ...TIME_DEFAULTS, ...ENERGY_DEFAULTS }));
+  const [showModel, setShowModel] = useState(false);
+  const result = useMemo(() => (open && navState && from && to ? compareRoutes(navState, from, to, params) : null), [open, navState, from, to, params]);
+  const setP = (k, v, min, max) => setParams(p => ({ ...p, [k]: Math.min(max, Math.max(min, Number(v) || 0)) }));
+  if (!route) return null;
+  if (!open) {
+    return <div className="route-foot"><button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(true)}><Icons.Columns size={14} /> Compare alternative routes</button></div>;
+  }
+  const fmtT = (t) => (t >= 90 ? `${(t / 60).toFixed(1)} min` : `${t.toFixed(0)} s`);
+  return (
+    <div className="route-compare">
+      <div className="rc-head">
+        <strong>Alternative routes</strong>
+        <IconButton icon={Icons.X} label="Close comparison" size={13} className="sm" onClick={() => setOpen(false)} />
+      </div>
+      <div className="rc-table">
+        <table className="dtbl compact">
+          <thead><tr><th>Route</th><th className="num">Drive</th><th className="num">Time</th><th className="num">Changes</th><th className="num">Energy</th></tr></thead>
+          <tbody>
+            {result && result.variants.map(v => (
+              <tr key={v.id} title={v.note} data-muted={!!v.sameAs || !v.route}>
+                <td>{v.label}</td>
+                {!v.route ? <td colSpan={4} className="muted">No route</td>
+                  : v.sameAs ? <td colSpan={4} className="muted">Same path as {v.sameAs}</td>
+                  : (<>
+                    <td className="num mono">{v.metrics.drive.toFixed(1)} m</td>
+                    <td className="num mono">{fmtT(v.metrics.time)}</td>
+                    <td className="num mono" title={`${v.metrics.lifts} lift, ${v.metrics.stairs} stair`}>{v.metrics.changes}</td>
+                    <td className="num mono">{v.metrics.energyWh.toFixed(2)} Wh</td>
+                  </>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="field-grid">
+        <label className="field"><span>Robot speed (m/s)</span><input type="number" min="0.1" max="3" step="0.1" value={params.speed} onChange={e => setP('speed', e.target.value, 0.1, 3)} /></label>
+        <label className="field"><span>Lift speed (m/s)</span><input type="number" min="0.2" max="5" step="0.1" value={params.liftSpeed} onChange={e => setP('liftSpeed', e.target.value, 0.2, 5)} /></label>
+      </div>
+      <button type="button" className="btn btn-ghost btn-sm" aria-expanded={showModel} onClick={() => setShowModel(s => !s)}>{showModel ? 'Hide' : 'Edit'} energy model</button>
+      {showModel && (
+        <div className="field-grid three">
+          <label className="field"><span>Driving (Wh/m)</span><input type="number" min="0" step="0.01" value={params.driveWhPerM} onChange={e => setP('driveWhPerM', e.target.value, 0, 100)} /></label>
+          <label className="field"><span>Climbing (Wh/m)</span><input type="number" min="0" step="0.1" value={params.climbWhPerM} onChange={e => setP('climbWhPerM', e.target.value, 0, 1000)} /></label>
+          <label className="field"><span>Idle (W)</span><input type="number" min="0" step="1" value={params.idleW} onChange={e => setP('idleW', e.target.value, 0, 5000)} /></label>
+        </div>
+      )}
+      <p className="pane-note">Distance is measured on the planned path. Time adds lift rides (travel plus {params.liftDoorTime} s of doors at each end, no queueing) and stairs at {Math.round(params.stairSpeedFactor * 100)}% speed, as in Simulate. Energy is an estimate from the coefficients above, not a measurement: set them for your robot.{result ? ` Planned in ${result.ms.toFixed(0)} ms.` : ''}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ROS 2 export: map_server PGM + YAML per level, optional route goals, in one zip.
+// ---------------------------------------------------------------------------
+function RosExportSection({ navState, model, gridRoute }) {
+  const [includeZones, setIncludeZones] = useState(true);
+  const [voidAs, setVoidAs] = useState('occupied');
+  const [withRoute, setWithRoute] = useState(true);
+  const hasNogo = (navState.zones || []).some(z => z.kind === 'nogo');
+  const go = () => {
+    const out = exportRosMaps(navState, { includeZones, voidAs, route: withRoute ? gridRoute : null });
+    const zip = makeZip(out.files);
+    const stem = model.fileName.replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_') || 'model';
+    download(new Blob([zip], { type: 'application/zip' }), `${stem}-ros2-maps.zip`, 'application/zip');
+  };
+  return (
+    <>
+      <p className="pane-note">Standard Nav2 map_server files, one map per level: a binary PGM and its YAML, the same format as map_saver, so they load without conversion. Cells use this robot’s height. They are not inflated, because Nav2 inflates its own costmap.</p>
+      <label className="field">
+        <span>Cells without a floor</span>
+        <select value={voidAs} onChange={e => setVoidAs(e.target.value)}>
+          <option value="occupied">Occupied (safer: edges and shafts are walls)</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </label>
+      <div className="toggle-row">
+        <label className="check-field"><input type="checkbox" checked={includeZones} disabled={!hasNogo} onChange={e => setIncludeZones(e.target.checked)} /> No-go zones as occupied</label>
+        <label className="check-field"><input type="checkbox" checked={withRoute && !!gridRoute} disabled={!gridRoute} onChange={e => setWithRoute(e.target.checked)} /> Route as Nav2 waypoint goals</label>
+      </div>
+      {!gridRoute && <p className="pane-note">Plan a route on the occupancy grid to include it as FollowWaypoints goals.</p>}
+      <button type="button" className="btn btn-sm" onClick={go}><Icons.Download size={14} /> Download ROS 2 maps (.zip)</button>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Safety zones: rectangles drawn on the grid or plan with two clicks.
+// ---------------------------------------------------------------------------
+function SafetyZonesSection({ nav, navState }) {
+  const mode = nav.clickMode;
+  const levelName = (id) => (navState && navState.levels.get(id) ? navState.levels.get(id).grid.levelName : 'level');
+  return (
+    <>
+      <p className="pane-note">No-go zones keep robots out, like a wall. Slow zones cap the robot’s speed, and routes prefer to avoid them. Zones always apply to routes here. In Simulate they are off unless you switch them on.</p>
+      <div className="pick-row">
+        <button type="button" className="btn btn-sm" data-active={mode === 'zone-nogo'} onClick={() => nav.setClickMode(mode === 'zone-nogo' ? 'select' : 'zone-nogo')}><Icons.Ban size={14} /> Draw no-go zone</button>
+        <button type="button" className="btn btn-sm" data-active={mode === 'zone-slow'} onClick={() => nav.setClickMode(mode === 'zone-slow' ? 'select' : 'zone-slow')}><Icons.Speed size={14} /> Draw slow zone</button>
+      </div>
+      {mode === 'zone-slow' && (
+        <label className="field">
+          <span>Speed in the slow zone</span>
+          <select value={nav.zoneFactor} onChange={e => nav.setZoneFactor(Number(e.target.value))}>
+            <option value={0.25}>25% of normal speed</option>
+            <option value={0.5}>50% of normal speed</option>
+            <option value={0.75}>75% of normal speed</option>
+          </select>
+        </label>
+      )}
+      {/^zone-/.test(mode) && <p className="pane-note">{nav.pendingZone ? 'Click the opposite corner.' : 'Click one corner of the zone on the coloured grid or the floor plan.'}</p>}
+      {nav.zones.length > 0 && (
+        <div className="obstacle-list">
+          {nav.zones.map(z => (
+            <div key={z.id} className="list-row">
+              <span className={`gl ${z.kind === 'nogo' ? 'gl-zone' : 'gl-slow'}`} />
+              <div className="list-main">{z.kind === 'nogo' ? 'No-go' : `Slow (${Math.round(z.factor * 100)}%)`}, {Math.abs(z.x1 - z.x0).toFixed(1)} × {Math.abs(z.z1 - z.z0).toFixed(1)} m on {levelName(z.levelId)}</div>
+              <IconButton icon={Icons.X} label="Remove zone" size={13} className="sm" onClick={() => nav.removeZone(z.id)} />
+            </div>
+          ))}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={nav.clearZones}>Remove all zones</button>
+        </div>
+      )}
+    </>
   );
 }
 
 function OccupancyMapSection({ navState, gridInfo, nav, model, onSelectIds }) {
   const sum = gridInfo.summary;
-  const counts = [0, 0, 0, 0, 0, 0, 0];
+  const counts = new Array(CELL_STATES).fill(0);
   sum.levels.forEach(l => l.counts.forEach((c, i) => { counts[i] += c; }));
   const area = (n) => `${(n * navState.navMap.res * navState.navMap.res).toFixed(0)} m²`;
   const legend = [
@@ -260,6 +403,7 @@ function OccupancyMapSection({ navState, gridInfo, nav, model, onSelectIds }) {
     [CELL.OBSTACLE, 'Obstacle', 'obstacle'],
     [CELL.USER, 'What-if obstacle', 'user'],
     [CELL.BLOCKED, 'Blocked door', 'blocked'],
+    ...(counts[CELL.ZONE] ? [[CELL.ZONE, 'No-go zone', 'zone']] : []),
   ];
   const cell = nav.cellInfo;
   return (

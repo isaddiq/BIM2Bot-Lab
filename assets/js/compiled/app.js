@@ -685,6 +685,9 @@
     const [clickMode, setClickMode] = useState("select");
     const [obstacleSize, setObstacleSize] = useState(1);
     const [obstacles, setObstacles] = useState([]);
+    const [zones, setZones] = useState([]);
+    const [pendingZone, setPendingZone] = useState(null);
+    const [zoneFactor, setZoneFactor] = useState(0.5);
     const [cellQuery, setCellQuery] = useState(null);
     const [stairsAsLifts, setStairsAsLifts] = useState(false);
     const [gridWanted, setGridWanted] = useState(false);
@@ -759,7 +762,7 @@
       }, 30);
       return () => clearTimeout(h);
     }, [building, gridWanted]);
-    const navState = useMemo(() => navMap && building ? applyRobot(navMap, building, robot, { blocked, obstacles, stairsAsLifts }) : null, [navMap, building, robot, blocked, obstacles, stairsAsLifts]);
+    const navState = useMemo(() => navMap && building ? applyRobot(navMap, building, robot, { blocked, obstacles, zones, stairsAsLifts }) : null, [navMap, building, robot, blocked, obstacles, zones, stairsAsLifts]);
     const gridInfo = useMemo(() => navState ? { summary: navMapSummary(navState), reach: gridReachability(navState, building) } : null, [navState]);
     const endpoint = (id, pt) => {
       if (pt) return pt;
@@ -810,6 +813,8 @@
       setRouteEnds(EMPTY_ROUTE);
       setBlocked(/* @__PURE__ */ new Set());
       setObstacles([]);
+      setZones([]);
+      setPendingZone(null);
       setMissions([]);
       setPendingMission(null);
       setPlanLevel(null);
@@ -923,6 +928,20 @@
         });
         return;
       }
+      if (clickMode === "zone-nogo" || clickMode === "zone-slow") {
+        if (!pendingZone || pendingZone.levelId !== lid) {
+          setPendingZone(pt);
+          return;
+        }
+        if (Math.abs(x - pendingZone.x) < 0.2 || Math.abs(z - pendingZone.z) < 0.2) {
+          toast({ kind: "info", msg: "Zone too small", sub: "Click the opposite corner at least 0.2 m away in both directions." });
+          return;
+        }
+        const kind = clickMode === "zone-nogo" ? "nogo" : "slow";
+        setZones((list) => [...list, { id: uid(), kind, levelId: lid, x0: pendingZone.x, z0: pendingZone.z, x1: x, z1: z, ...kind === "slow" ? { factor: zoneFactor } : {} }]);
+        setPendingZone(null);
+        return;
+      }
       if (clickMode === "start" || clickMode === "goal") {
         const room = roomAt(lid, x, z);
         setRouteEnds((r) => clickMode === "start" ? { ...r, startPoint: pt, startId: room } : { ...r, goalPoint: pt, goalId: room });
@@ -938,7 +957,7 @@
         setMissions((list) => [...list, { id: uid(), start: pendingMission, goal: pt }].slice(0, 8));
         setPendingMission(null);
       }
-    }, [clickMode, obstacleSize, roomAt, workspace, route, pendingMission]);
+    }, [clickMode, obstacleSize, roomAt, workspace, route, pendingMission, pendingZone, zoneFactor, toast]);
     const onPickEvent = useCallback((e) => {
       if (clickMode !== "select") {
         if (e.overlay !== "grid" || !e.point) {
@@ -1092,6 +1111,7 @@
       clickMode,
       setClickMode: (m) => {
         setClickMode(m);
+        if (!/^zone-/.test(m)) setPendingZone(null);
         if (m === "select") return;
         setShowGrid(true);
         if (levelId === "all" && building) {
@@ -1106,6 +1126,17 @@
       obstacles,
       removeObstacle: (id) => setObstacles((list) => list.filter((o) => o.id !== id)),
       clearObstacles: () => setObstacles([]),
+      zones,
+      pendingZone,
+      zoneFactor,
+      setZoneFactor,
+      removeZone: (id) => setZones((list) => list.filter((z) => z.id !== id)),
+      clearZones: () => {
+        setZones([]);
+        setPendingZone(null);
+      },
+      startPt,
+      goalPt,
       cellInfo,
       setCellInfo: (v) => setCellQuery(v),
       stairsAsLifts,
@@ -1138,7 +1169,7 @@
         return n;
       }),
       clearBlocked: () => setBlocked(/* @__PURE__ */ new Set())
-    }), [robot, route, blocked, showGraph, workspace, planner, showGrid, clickMode, obstacleSize, obstacles, cellInfo, stairsAsLifts, levelId, building, navMap, onLevelChange, simulateRoute, startPt, goalPt]);
+    }), [robot, route, blocked, showGraph, workspace, planner, showGrid, clickMode, obstacleSize, obstacles, zones, pendingZone, zoneFactor, cellInfo, stairsAsLifts, levelId, building, navMap, onLevelChange, simulateRoute, startPt, goalPt]);
     useEffect(() => {
       const v = viewerRef.current;
       if (!v) return;
@@ -1227,6 +1258,7 @@
             } else if (clickMode !== "select") {
               setClickMode("select");
               setPendingMission(null);
+              setPendingZone(null);
             } else dispatch({ type: "clear-selection" });
             return;
           case "?":
@@ -1392,6 +1424,8 @@
         selectedIds: viewerState.selectedIds,
         blocked,
         obstacles,
+        zones: workspace === "navigate" || workspace === "simulate" && simApi.sim.current && simApi.sim.current.scenario.applyZones ? zones : [],
+        pendingZone: workspace === "navigate" ? pendingZone : null,
         routeLegs: workspace === "navigate" ? planLegs : [],
         routeTransitions: workspace === "navigate" ? planTransitions : [],
         start: workspace === "navigate" ? startPt : null,
@@ -1510,7 +1544,7 @@
         layout: viewLayout,
         layoutSwitch,
         planElement,
-        hint: clickMode === "start" ? "Click the floor grid or the plan to place the route start. Esc to stop." : clickMode === "goal" ? "Click the floor grid or the plan to place the route goal. Esc to stop." : clickMode === "mission" ? pendingMission ? "Now click the mission goal." : "Click a mission start on the floor grid or the plan." : workspace === "navigate" ? clickMode === "inspect" ? "Click a grid cell to see which IFC element and step decided it. Esc to stop." : clickMode === "obstacle" ? "Click the grid to place or remove a what-if obstacle. Esc to stop." : planner === "graph" ? "Click a graph node to inspect the IFC element it came from." : null : workspace === "simulate" && simApi.status === "running" ? `Simulating at ${simApi.speed}\xD7 speed` : null
+        hint: clickMode === "start" ? "Click the floor grid or the plan to place the route start. Esc to stop." : clickMode === "goal" ? "Click the floor grid or the plan to place the route goal. Esc to stop." : clickMode === "mission" ? pendingMission ? "Now click the mission goal." : "Click a mission start on the floor grid or the plan." : workspace === "navigate" ? clickMode === "inspect" ? "Click a grid cell to see which IFC element and step decided it. Esc to stop." : clickMode === "obstacle" ? "Click the grid to place or remove a what-if obstacle. Esc to stop." : /^zone-/.test(clickMode) ? pendingZone ? "Now click the opposite corner of the zone." : `Click one corner of the ${clickMode === "zone-nogo" ? "no-go" : "slow"} zone. Esc to stop.` : planner === "graph" ? "Click a graph node to inspect the IFC element it came from." : null : workspace === "simulate" && simApi.status === "running" ? `Simulating at ${simApi.speed}\xD7 speed` : null
       }
     ), /* @__PURE__ */ React.createElement(Inspector, { model, building, nav, viewerState, dispatch, onZoomTo, toast, onSelect: (id) => dispatch({ type: "select", ids: [id] }) }), /* @__PURE__ */ React.createElement(
       BottomPanel,

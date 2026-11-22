@@ -26,7 +26,17 @@
     // s of waiting before a robot is let through
     maxTime: 3600,
     // s
-    seed: 7
+    seed: 7,
+    applyZones: false,
+    // safety zones from Navigate are optional in the simulation
+    doorEvents: [],
+    // [{ doorId, closeAt, openAt|null }] in simulated seconds
+    doorInfo: "fleet",
+    // 'fleet': robots know at once | 'onboard': robots notice within doorSenseRange
+    doorSenseRange: 3,
+    // m along the path
+    retryInterval: 5
+    // s between re-plan attempts while no route exists
   };
   const ROBOT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"];
   const ROBOT_COLORS_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
@@ -45,8 +55,33 @@
     const robotProfile = sc.robot || DEFAULT_ROBOT_PROFILE;
     const rng = mulberry32(sc.seed);
     const { building } = ctx;
-    const nav = applyRobot(ctx.navMap, building, robotProfile, { blocked: sc.blocked, obstacles: sc.obstacles, stairsAsLifts: sc.stairsAsLifts });
-    const humanNav = sc.humans > 0 ? applyRobot(ctx.navMap, building, { name: "Person", width: 0.45, height: 1.8, clearance: 0.05, canUseStairs: true, canUseLifts: false }, { blocked: sc.blocked, obstacles: sc.obstacles }) : null;
+    const baseBlocked = sc.blocked || /* @__PURE__ */ new Set();
+    const zones = sc.applyZones ? sc.zones || [] : [];
+    const localCache = /* @__PURE__ */ new Map();
+    const navFor = (closed) => {
+      const blocked = closed && closed.size ? /* @__PURE__ */ new Set([...baseBlocked, ...closed]) : baseBlocked;
+      const key = JSON.stringify([robotProfile, !!sc.stairsAsLifts, [...blocked].sort((a, b) => a - b), sc.obstacles || [], zones]);
+      const shared = closed && closed.size ? ctx.closureCache : ctx.navCache;
+      const cache = shared || localCache;
+      if (cache.has(key)) return cache.get(key);
+      const st = applyRobot(ctx.navMap, building, robotProfile, { blocked, obstacles: sc.obstacles, zones, stairsAsLifts: sc.stairsAsLifts });
+      if (shared && cache.size >= 4) cache.delete(cache.keys().next().value);
+      cache.set(key, st);
+      return st;
+    };
+    let nav = navFor(null);
+    const humanKey = JSON.stringify(["person", [...baseBlocked].sort((a, b) => a - b), sc.obstacles || []]);
+    let humanNav = null;
+    if (sc.humans > 0) {
+      humanNav = ctx.navCache && ctx.navCache.get(humanKey);
+      if (!humanNav) {
+        humanNav = applyRobot(ctx.navMap, building, { name: "Person", width: 0.45, height: 1.8, clearance: 0.05, canUseStairs: true, canUseLifts: false }, { blocked: sc.blocked, obstacles: sc.obstacles });
+        if (ctx.navCache) {
+          if (ctx.navCache.size >= 4) ctx.navCache.delete(ctx.navCache.keys().next().value);
+          ctx.navCache.set(humanKey, humanNav);
+        }
+      }
+    }
     const robotRadius = nav.radius;
     const rooms = [];
     building.spaces.forEach((s) => {
@@ -155,7 +190,7 @@
         task: null,
         lift: null,
         stair: null,
-        stats: { dist: 0, moveT: 0, waitT: 0, liftWaitT: 0, rideT: 0, stairT: 0, slowT: 0, stopT: 0, tasks: 0, taskTimes: [], unreachable: 0 }
+        stats: { dist: 0, moveT: 0, waitT: 0, liftWaitT: 0, rideT: 0, stairT: 0, slowT: 0, stopT: 0, zoneSlowT: 0, blockedT: 0, replans: 0, tasks: 0, taskTimes: [], unreachable: 0 }
       });
     }
     const nextTask = (r) => {
@@ -170,6 +205,16 @@
         const goal = r.missionStep % 2 === 0 ? r.mission.goal : r.mission.start;
         r.missionStep++;
         const route = goal ? plan(nav, { levelId: r.levelId, point: r.pos }, goal) : null;
+        if (!route && goal && closedDoors.size) {
+          r.task = { from: r.room, to: goal, startT: time, length: 0 };
+          r.legs = [];
+          r.legIdx = 0;
+          r.tasksLeft--;
+          r.state = "blocked";
+          r.lastTry = time;
+          log("blocked", `${r.name} has no route to ${goal.name} (closed door); waiting`, r);
+          return;
+        }
         if (!route) {
           r.stats.unreachable += r.tasksLeft;
           r.tasksLeft = 0;
@@ -213,6 +258,7 @@
       if (leg.type === "walk") {
         r.state = "moving";
         r.ptIdx = 0;
+        if (closedDoors.size && sc.doorInfo === "fleet" && closedDoorAhead(r, Infinity)) replan(r, "closed door");
       } else if (leg.type === "lift") {
         const L = lifts.get(leg.liftId);
         r.state = "lift-wait";
@@ -283,6 +329,93 @@
         return;
       }
       h.pause = 5;
+    };
+    const closedDoors = /* @__PURE__ */ new Set();
+    const doorName = (id) => {
+      const d = building.doors.get(id);
+      return d ? d.name : `Door ${id}`;
+    };
+    const doorQueue = [];
+    (sc.doorEvents || []).forEach((ev) => {
+      if (!building.doors.has(ev.doorId) || !(ev.closeAt >= 0)) return;
+      doorQueue.push({ t: ev.closeAt, doorId: ev.doorId, close: true });
+      if (ev.openAt != null && ev.openAt > ev.closeAt) doorQueue.push({ t: ev.openAt, doorId: ev.doorId, close: false });
+    });
+    doorQueue.sort((a, b) => a.t - b.t || (a.close ? 1 : -1));
+    let doorChanges = 0;
+    const closedDoorAhead = (r, range) => {
+      let left = range;
+      let pos = r.pos;
+      for (let li = r.legIdx; li < r.legs.length; li++) {
+        const leg = r.legs[li];
+        if (leg.type !== "walk") {
+          if (range !== Infinity) return null;
+          continue;
+        }
+        const lv = nav.levels.get(leg.levelId);
+        if (!lv) continue;
+        const start = li === r.legIdx ? r.ptIdx : 0;
+        if (li !== r.legIdx) pos = leg.points[0];
+        for (let k = start; k < leg.points.length; k++) {
+          const q = leg.points[k];
+          const len = Math.hypot(q[0] - pos[0], q[2] - pos[2]);
+          const n = Math.max(1, Math.ceil(len / (lv.grid.res * 0.5)));
+          for (let s = 1; s <= n; s++) {
+            const d = len * s / n;
+            if (d > left) return null;
+            const idx = cellIndex(lv.grid, pos[0] + (q[0] - pos[0]) * s / n, pos[2] + (q[2] - pos[2]) * s / n);
+            if (idx >= 0 && lv.state[idx] === CELL.BLOCKED && closedDoors.has(lv.cause[idx])) return lv.cause[idx];
+          }
+          left -= len;
+          pos = q;
+        }
+        if (range !== Infinity) return null;
+      }
+      return null;
+    };
+    const replan = (r, why, quiet) => {
+      const goal = r.task ? r.task.to : null;
+      if (!goal) return false;
+      const route = plan(nav, { levelId: r.levelId, point: r.pos }, goal);
+      if (!route) {
+        if (r.state !== "blocked") {
+          r.state = "blocked";
+          r.lastTry = time;
+          log("blocked", `${r.name} has no route to ${goal.name} (${why}); waiting`, r);
+        } else r.lastTry = time;
+        return false;
+      }
+      r.legs = toPlan(route);
+      r.legIdx = 0;
+      r.ptIdx = 0;
+      r.stats.replans++;
+      r.waitRun = 0;
+      r.triedDetour = false;
+      if (!quiet) log("replan", `${r.name} re-planned to ${goal.name} around a ${why}`, r);
+      const leg = r.legs[0];
+      if (!leg) {
+        finishTask(r);
+        return true;
+      }
+      if (leg.type === "walk") {
+        r.state = "moving";
+        r.ptIdx = 0;
+      } else startLeg(r);
+      return true;
+    };
+    const applyDoorEvent = (ev) => {
+      if (ev.close) closedDoors.add(ev.doorId);
+      else closedDoors.delete(ev.doorId);
+      nav = navFor(closedDoors);
+      doorChanges++;
+      events.push({ t: time, kind: ev.close ? "door-closed" : "door-opened", text: `${doorName(ev.doorId)} ${ev.close ? "closed" : "reopened"}`, robotId: null, levelId: building.doors.get(ev.doorId).levelId, pos: building.doors.get(ev.doorId).position.slice(), doorId: ev.doorId });
+      robots.forEach((r) => {
+        if (r.state === "blocked") {
+          replan(r, "closed door", false);
+          return;
+        }
+        if (ev.close && sc.doorInfo === "fleet" && r.state === "moving" && closedDoorAhead(r, Infinity) != null) replan(r, `closed door (${doorName(ev.doorId)})`);
+      });
     };
     let time = 0;
     const hri = { encounters: 0, nearMisses: 0, minSeparation: Infinity, pairs: /* @__PURE__ */ new Map() };
@@ -462,6 +595,10 @@
         case "riding":
           r.stats.rideT += dt;
           return;
+        case "blocked":
+          r.stats.blockedT += dt;
+          if (time - (r.lastTry || 0) >= sc.retryInterval) replan(r, "closed door");
+          return;
         case "stairs": {
           const s = r.stair;
           s.t += dt;
@@ -477,6 +614,13 @@
         }
         default:
           break;
+      }
+      if (closedDoors.size && sc.doorInfo === "onboard") {
+        const d2 = closedDoorAhead(r, sc.doorSenseRange);
+        if (d2 != null) {
+          replan(r, `closed door (${doorName(d2)}) seen ahead`);
+          if (r.state !== "moving") return;
+        }
       }
       const leg = r.legs[r.legIdx];
       let target = leg.points[r.ptIdx];
@@ -495,7 +639,15 @@
       }
       const ux = dx / d, uz = dz / d;
       r.heading = Math.atan2(uz, ux);
-      const factor = humanEffect(r);
+      let factor = humanEffect(r);
+      if (zones.length) {
+        const lvz = nav.levels.get(r.levelId);
+        const zf = lvz ? slowFactorAt(lvz, cellIndex(lvz.grid, r.pos[0], r.pos[2])) : 1;
+        if (zf < 1) {
+          r.stats.zoneSlowT += dt;
+          if (factor > 0) factor = Math.min(factor, zf);
+        }
+      }
       r.factor = factor;
       const stepLen = Math.min(d, sc.robotSpeed * Math.max(factor, 0.05) * dt);
       const blocker = r.ghost > 0 ? null : conflictWith(r, r.pos[0] + ux * stepLen, r.pos[2] + uz * stepLen);
@@ -598,6 +750,7 @@
     };
     const tick = (dt) => {
       time += dt;
+      while (doorQueue.length && doorQueue[0].t <= time) applyDoorEvent(doorQueue.shift());
       humans.forEach((h) => humanTick(h, dt));
       lifts.forEach((L) => liftTick(L, dt));
       robots.forEach((r) => robotTick(r, dt));
@@ -605,7 +758,10 @@
     };
     const sim = {
       scenario: sc,
-      nav,
+      get nav() {
+        return nav;
+      },
+      closedDoors,
       robots,
       humans,
       lifts,
@@ -654,7 +810,12 @@
             nearMisses: hri.nearMisses,
             minSeparation: Number.isFinite(hri.minSeparation) ? hri.minSeparation : null,
             deadlocks,
-            closePasses: hri.closePasses || 0
+            closePasses: hri.closePasses || 0,
+            replans: sum((r) => r.stats.replans),
+            blockedTime: sum((r) => r.stats.blockedT),
+            zoneSlowTime: sum((r) => r.stats.zoneSlowT),
+            doorChanges,
+            zonesApplied: zones.length
           },
           lifts: [...lifts.values()].map((L) => ({ id: L.id, name: L.name, virtual: L.virtual, served: L.stats.served, trips: L.stats.trips, meanWait: L.stats.served ? L.stats.waitTotal / L.stats.served : null, maxQueue: L.stats.maxQueue, utilisation: time > 0 ? L.stats.busyT / time : 0, queue: L.requests.length, level: levelName(L.carLevel) })),
           hotspots: hotspots()

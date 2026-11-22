@@ -7,8 +7,9 @@
     G5: "G5 \xB7 What-if obstacles",
     G6: "G6 \xB7 Path search"
   };
-  const CELL = { VOID: 0, FREE: 1, OBSTACLE: 2, INFLATED: 3, DOOR: 4, USER: 5, BLOCKED: 6 };
-  const CELL_LABEL = ["No floor", "Free", "Obstacle", "Too close to an obstacle", "Door opening", "What-if obstacle", "Blocked door"];
+  const CELL = { VOID: 0, FREE: 1, OBSTACLE: 2, INFLATED: 3, DOOR: 4, USER: 5, BLOCKED: 6, ZONE: 7 };
+  const CELL_LABEL = ["No floor", "Free", "Obstacle", "Too close to an obstacle", "Door opening", "What-if obstacle", "Blocked door", "No-go zone"];
+  const CELL_STATES = CELL_LABEL.length;
   const BAND_LOW = 0.1;
   const BAND_HIGH = 2.2;
   const FLOOR_TOL = 0.35;
@@ -28,6 +29,7 @@
       floor: new Uint8Array(n),
       floorSrc: new Int32Array(n).fill(-1),
       obsLow: new Float32Array(n).fill(Infinity),
+      obsHigh: new Float32Array(n).fill(-Infinity),
       obsSrc: new Int32Array(n).fill(-1),
       door: new Int32Array(n).fill(-1)
     };
@@ -162,16 +164,19 @@
         forEachTriangle(el, (p) => {
           const poly = clipTriangleY(p, lo, hi);
           if (!poly) return;
-          let low = Infinity;
+          let low = Infinity, high = -Infinity;
           poly.forEach((v) => {
             if (v[1] < low) low = v[1];
+            if (v[1] > high) high = v[1];
           });
           const height = low - fy;
+          const top = high - fy;
           const mark = (idx) => {
             if (height < g.obsLow[idx]) {
               g.obsLow[idx] = height;
               g.obsSrc[idx] = el.expressId;
             }
+            if (top > g.obsHigh[idx]) g.obsHigh[idx] = top;
           };
           if (poly.length === 1) {
             const idx = cellIndex(g, poly[0][0], poly[0][2]);
@@ -251,6 +256,7 @@
     const radius = robot.width / 2 + robot.clearance;
     const blocked = opts.blocked || /* @__PURE__ */ new Set();
     const userObstacles = opts.obstacles || [];
+    const zones = opts.zones || [];
     const levels = /* @__PURE__ */ new Map();
     navMap.grids.forEach((g) => {
       const n = g.w * g.h;
@@ -293,6 +299,20 @@
             }
           }
         }
+      });
+      let slow = null;
+      zones.filter((z) => z.levelId === g.levelId).forEach((z) => {
+        forEachZoneCell(g, z, (idx) => {
+          if (z.kind === "nogo") {
+            if (state2[idx] === CELL.VOID) return;
+            state2[idx] = CELL.ZONE;
+            cause[idx] = -3;
+            hard[idx] = 1;
+          } else {
+            if (!slow) slow = new Float32Array(n).fill(1);
+            slow[idx] = Math.min(slow[idx], Math.max(0.05, Math.min(1, z.factor || 0.5)));
+          }
+        });
       });
       for (let k = 0; k < n; k++) if (hard[k]) {
         near[k] = k;
@@ -337,9 +357,9 @@
       }
       let free = 0;
       for (let k = 0; k < n; k++) if (state2[k] === CELL.FREE || state2[k] === CELL.DOOR) free++;
-      levels.set(g.levelId, { grid: g, state: state2, cause, dist, near, freeCells: free });
+      levels.set(g.levelId, { grid: g, state: state2, cause, dist, near, slow, freeCells: free });
     });
-    const state = { navMap, building, robot, radius, levels, blocked, obstacles: userObstacles, stairsAsLifts: !!opts.stairsAsLifts };
+    const state = { navMap, building, robot, radius, levels, blocked, obstacles: userObstacles, zones, stairsAsLifts: !!opts.stairsAsLifts };
     state.transitions = buildTransitions(state);
     const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
     state.buildMs = t1 - t0;
@@ -347,6 +367,16 @@
   }
   function passable(st) {
     return st === CELL.FREE || st === CELL.DOOR;
+  }
+  function forEachZoneCell(g, z, visit) {
+    const xa = Math.min(z.x0, z.x1), xb = Math.max(z.x0, z.x1);
+    const za = Math.min(z.z0, z.z1), zb = Math.max(z.z0, z.z1);
+    const i0 = Math.max(0, Math.ceil((xa - g.x0) / g.res - 0.5)), i1 = Math.min(g.w - 1, Math.floor((xb - g.x0) / g.res - 0.5));
+    const j0 = Math.max(0, Math.ceil((za - g.z0) / g.res - 0.5)), j1 = Math.min(g.h - 1, Math.floor((zb - g.z0) / g.res - 0.5));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) visit(j * g.w + i);
+  }
+  function slowFactorAt(lv, idx) {
+    return lv.slow && idx >= 0 ? lv.slow[idx] : 1;
   }
   function nearestFreeCell(lv, x, z, maxDist = 3) {
     const g = lv.grid;
@@ -495,9 +525,12 @@
       for (let i = levelList.length - 1; i >= 0; i--) if (node >= offset.get(levelList[i].grid.levelId)) return levelList[i];
       return levelList[0];
     };
+    const avoid = opts.avoid || null;
+    const penalty = opts.transitionPenalty || 0;
     const trans = /* @__PURE__ */ new Map();
     state.transitions.forEach((tr) => {
       if (!tr.usable || tr.blocked) return;
+      if (avoid && avoid.has(tr.kind === "lift" ? "lift" : tr.kind === "stair" || tr.kind === "escalator" ? "stair" : tr.kind)) return;
       const na = offset.get(tr.a.levelId) + tr.a.cell;
       const nb = offset.get(tr.b.levelId) + tr.b.cell;
       if (!trans.has(na)) trans.set(na, []);
@@ -545,6 +578,7 @@
         const margin = lv.dist[nc] - state.radius;
         const comfort = margin < 0.4 ? 1 + (0.4 - Math.max(0, margin)) * 0.75 : 1;
         let cost = m * g.res * comfort;
+        if (lv.slow) cost /= lv.slow[nc];
         if (extra) cost += extra(g.levelId, nc);
         const nn = base + nc;
         const ng = gc + cost;
@@ -557,7 +591,7 @@
       const tl = trans.get(node);
       if (tl) {
         for (const { to: nn, tr } of tl) {
-          const ng = gc + tr.cost;
+          const ng = gc + tr.cost + penalty;
           if (ng < gScore[nn]) {
             gScore[nn] = ng;
             came[nn] = node;
@@ -666,7 +700,7 @@
         const src = lv.cause[idx];
         const srcState = src >= 0 ? lv.state[src] : -1;
         const srcEl = srcState === CELL.OBSTACLE || srcState === CELL.BLOCKED ? lv.cause[src] : null;
-        const why = srcState === CELL.VOID ? "the edge of the floor" : srcState === CELL.USER ? "a what-if obstacle" : srcState === CELL.BLOCKED ? "a blocked door" : "an obstacle";
+        const why = srcState === CELL.VOID ? "the edge of the floor" : srcState === CELL.USER ? "a what-if obstacle" : srcState === CELL.BLOCKED ? "a blocked door" : srcState === CELL.ZONE ? "a no-go zone" : "an obstacle";
         return { ...base, step: "G4", elementId: srcEl, sourceCell: src, detail: `Within ${state.radius.toFixed(2)} m (robot half-width plus clearance) of ${why}; nearest is ${lv.dist[idx].toFixed(2)} m away.` };
       }
       case CELL.DOOR:
@@ -675,8 +709,13 @@
         return { ...base, step: "G5", elementId: lv.cause[idx], detail: "This door is blocked in the what-if scenario." };
       case CELL.USER:
         return { ...base, step: "G5", elementId: null, detail: "A what-if obstacle placed in the view." };
-      default:
-        return { ...base, step: "G1", elementId: g.floorSrc[idx] >= 0 ? g.floorSrc[idx] : null, detail: `Free floor with ${lv.dist[idx].toFixed(2)} m to the nearest obstruction.` };
+      case CELL.ZONE:
+        return { ...base, step: "G5", elementId: null, detail: "Inside a no-go safety zone: robots may not enter." };
+      default: {
+        const f = slowFactorAt(lv, idx);
+        const slowNote = f < 1 ? ` Inside a slow zone: robots drive at ${Math.round(f * 100)}% speed.` : "";
+        return { ...base, step: f < 1 ? "G5" : st === CELL.DOOR ? "G3" : "G1", elementId: g.floorSrc[idx] >= 0 ? g.floorSrc[idx] : null, detail: `Free floor with ${lv.dist[idx].toFixed(2)} m to the nearest obstruction.${slowNote}` };
+      }
     }
   }
   function levelAtHeight(state, y) {
@@ -755,7 +794,7 @@
   function navMapSummary(state) {
     const out = { levels: [], free: 0, total: 0 };
     state.levels.forEach((lv) => {
-      const counts = [0, 0, 0, 0, 0, 0, 0];
+      const counts = new Array(CELL_STATES).fill(0);
       for (let k = 0; k < lv.state.length; k++) counts[lv.state[k]]++;
       const floorCells = lv.state.length - counts[CELL.VOID];
       out.levels.push({ levelId: lv.grid.levelId, name: lv.grid.levelName, w: lv.grid.w, h: lv.grid.h, counts, free: counts[CELL.FREE] + counts[CELL.DOOR], floorCells, fallback: lv.grid.floorFallback });
@@ -768,6 +807,7 @@
     GRID_STEPS,
     CELL,
     CELL_LABEL,
+    CELL_STATES,
     buildNavMap,
     applyRobot,
     planGridRoute,
@@ -777,6 +817,10 @@
     navMapSummary,
     gridReachability,
     cellIndex,
-    cellCenter
+    cellCenter,
+    passable,
+    forEachZoneCell,
+    slowFactorAt,
+    lineOfSight
   });
 })();

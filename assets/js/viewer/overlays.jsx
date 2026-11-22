@@ -105,9 +105,11 @@ function buildRouteOverlay(route, opts = {}) {
 // Occupancy grid (Version 2): one textured plane per level, painted on the floor.
 // ---------------------------------------------------------------------------
 const GRID_RGBA = {
-  light: [[0, 0, 0, 0], [47, 158, 143, 46], [198, 47, 58, 215], [224, 86, 15, 92], [47, 158, 143, 200], [224, 86, 15, 245], [120, 16, 28, 235]],
-  dark: [[0, 0, 0, 0], [79, 209, 189, 46], [255, 107, 116, 215], [255, 138, 61, 92], [79, 209, 189, 200], [255, 138, 61, 245], [190, 40, 55, 235]],
+  light: [[0, 0, 0, 0], [47, 158, 143, 46], [198, 47, 58, 215], [224, 86, 15, 92], [47, 158, 143, 200], [224, 86, 15, 245], [120, 16, 28, 235], [150, 40, 150, 190]],
+  dark: [[0, 0, 0, 0], [79, 209, 189, 46], [255, 107, 116, 215], [255, 138, 61, 92], [79, 209, 189, 200], [255, 138, 61, 245], [190, 40, 55, 235], [214, 112, 214, 190]],
 };
+// Slow-zone tint over free, door and inflated cells.
+const SLOW_RGBA = { light: [201, 133, 0, 120], dark: [237, 161, 0, 120] };
 
 function planeForGrid(g, canvas, lift) {
   const tex = new THREE.CanvasTexture(canvas);
@@ -127,6 +129,7 @@ function planeForGrid(g, canvas, lift) {
 
 function buildGridOverlay(navState, opts = {}) {
   const palette = GRID_RGBA[opts.theme === 'dark' ? 'dark' : 'light'];
+  const slowC = SLOW_RGBA[opts.theme === 'dark' ? 'dark' : 'light'];
   const group = new THREE.Group();
   const only = opts.levelId != null && opts.levelId !== 'all' ? Number(opts.levelId) : null;
   navState.levels.forEach(lv => {
@@ -139,7 +142,8 @@ function buildGridOverlay(navState, opts = {}) {
     const ctx = canvas.getContext('2d');
     const img = ctx.createImageData(g.w, g.h);
     for (let k = 0; k < lv.state.length; k++) {
-      const c = palette[lv.state[k]];
+      const st = lv.state[k];
+      const c = lv.slow && lv.slow[k] < 1 && (st === CELL.FREE || st === CELL.DOOR || st === CELL.INFLATED) ? slowC : palette[st];
       img.data[k * 4] = c[0]; img.data[k * 4 + 1] = c[1]; img.data[k * 4 + 2] = c[2]; img.data[k * 4 + 3] = c[3];
     }
     ctx.putImageData(img, 0, 0);
@@ -316,4 +320,42 @@ function buildAgentsOverlay(sim, opts = {}) {
   return { group, update };
 }
 
-Object.assign(window, { NAV_COLORS, buildMarkersOverlay, buildTopologyOverlay, buildRouteOverlay, buildGridOverlay, buildHeatOverlay, buildGridRouteOverlay, buildAgentsOverlay });
+// ---------------------------------------------------------------------------
+// Simulated LiDAR: hit points at the sensor height plus faint beams, updated in place.
+// ---------------------------------------------------------------------------
+function buildLidarOverlay(opts = {}) {
+  const group = new THREE.Group();
+  const max = 1440;
+  const ptsGeo = new THREE.BufferGeometry();
+  ptsGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 3), 3));
+  const color = opts.theme === 'dark' ? 0x4fd1bd : 0x0f8a78;
+  const points = new THREE.Points(ptsGeo, new THREE.PointsMaterial({ color, size: 5, sizeAttenuation: false, depthTest: false, transparent: true }));
+  const rayGeo = new THREE.BufferGeometry();
+  rayGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 6), 3));
+  const rays = new THREE.LineSegments(rayGeo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.18, depthTest: false }));
+  points.renderOrder = 42;
+  rays.renderOrder = 41;
+  points.frustumCulled = false;
+  rays.frustumCulled = false;
+  group.add(rays, points);
+  const update = (scan, y) => {
+    if (!scan) { ptsGeo.setDrawRange(0, 0); rayGeo.setDrawRange(0, 0); return; }
+    const n = Math.min(max, scan.ranges.length);
+    const p = ptsGeo.attributes.position.array, r = rayGeo.attributes.position.array;
+    let m = 0;
+    for (let b = 0; b < n; b++) {
+      const hx = scan.hits[b * 2], hz = scan.hits[b * 2 + 1];
+      r[b * 6] = scan.pose.x; r[b * 6 + 1] = y; r[b * 6 + 2] = scan.pose.z;
+      r[b * 6 + 3] = hx; r[b * 6 + 4] = y; r[b * 6 + 5] = hz;
+      if (scan.ranges[b] < scan.cfg.range) { p[m * 3] = hx; p[m * 3 + 1] = y; p[m * 3 + 2] = hz; m++; }
+    }
+    ptsGeo.attributes.position.needsUpdate = true;
+    rayGeo.attributes.position.needsUpdate = true;
+    ptsGeo.setDrawRange(0, m);
+    rayGeo.setDrawRange(0, n * 2);
+  };
+  update(null);
+  return { group, update };
+}
+
+Object.assign(window, { NAV_COLORS, buildMarkersOverlay, buildTopologyOverlay, buildRouteOverlay, buildGridOverlay, buildHeatOverlay, buildGridRouteOverlay, buildAgentsOverlay, buildLidarOverlay });

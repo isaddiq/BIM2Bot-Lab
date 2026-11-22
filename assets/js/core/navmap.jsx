@@ -8,7 +8,8 @@
  *   G3 door carving               door footprints are opened (or closed again for what-if blocking)
  * applyRobot(navMap, robot, opts) robot-specific state per cell:
  *   G4 robot inflation            distance transform; cells closer than the robot radius to an obstacle are unusable
- *   G5 what-if obstacles          user-placed obstacles and blocked doors
+ *   G5 what-if obstacles          user-placed obstacles, blocked doors and safety zones (no-go zones are
+ *                                 hard cells; slow zones keep their cells free but raise the travel cost)
  * planGridRoute(state, from, to)  G6 multi-level A* (8-connected, no corner cutting) with stair / lift transitions
  *
  * Every cell can be explained with explainCell(): which IFC element and which step decided its state.
@@ -23,8 +24,9 @@ const GRID_STEPS = {
   G6: 'G6 · Path search',
 };
 
-const CELL = { VOID: 0, FREE: 1, OBSTACLE: 2, INFLATED: 3, DOOR: 4, USER: 5, BLOCKED: 6 };
-const CELL_LABEL = ['No floor', 'Free', 'Obstacle', 'Too close to an obstacle', 'Door opening', 'What-if obstacle', 'Blocked door'];
+const CELL = { VOID: 0, FREE: 1, OBSTACLE: 2, INFLATED: 3, DOOR: 4, USER: 5, BLOCKED: 6, ZONE: 7 };
+const CELL_LABEL = ['No floor', 'Free', 'Obstacle', 'Too close to an obstacle', 'Door opening', 'What-if obstacle', 'Blocked door', 'No-go zone'];
+const CELL_STATES = CELL_LABEL.length;
 
 const BAND_LOW = 0.1;   // m above floor: ignore floor finishes and thresholds
 const BAND_HIGH = 2.2;  // m above floor: tallest robot considered
@@ -49,6 +51,7 @@ function makeGrid(level, bounds, res) {
     floor: new Uint8Array(n),
     floorSrc: new Int32Array(n).fill(-1),
     obsLow: new Float32Array(n).fill(Infinity),
+    obsHigh: new Float32Array(n).fill(-Infinity),
     obsSrc: new Int32Array(n).fill(-1),
     door: new Int32Array(n).fill(-1),
   };
@@ -201,11 +204,13 @@ function buildNavMap(model, building, opts = {}) {
       forEachTriangle(el, (p) => {
         const poly = clipTriangleY(p, lo, hi);
         if (!poly) return;
-        let low = Infinity;
-        poly.forEach(v => { if (v[1] < low) low = v[1]; });
+        let low = Infinity, high = -Infinity;
+        poly.forEach(v => { if (v[1] < low) low = v[1]; if (v[1] > high) high = v[1]; });
         const height = low - fy;
+        const top = high - fy;
         const mark = (idx) => {
           if (height < g.obsLow[idx]) { g.obsLow[idx] = height; g.obsSrc[idx] = el.expressId; }
+          if (top > g.obsHigh[idx]) g.obsHigh[idx] = top;
         };
         if (poly.length === 1) { const idx = cellIndex(g, poly[0][0], poly[0][2]); if (idx >= 0) mark(idx); return; }
         if (poly.length === 2) { rasterSegment(g, poly[0][0], poly[0][2], poly[1][0], poly[1][2], mark); return; }
@@ -284,6 +289,7 @@ function applyRobot(navMap, building, robot, opts = {}) {
   const radius = robot.width / 2 + robot.clearance;
   const blocked = opts.blocked || new Set();
   const userObstacles = opts.obstacles || [];
+  const zones = opts.zones || [];
   const levels = new Map();
 
   navMap.grids.forEach(g => {
@@ -314,6 +320,19 @@ function applyRobot(navMap, building, robot, opts = {}) {
           if (idx >= 0) { state[idx] = CELL.USER; cause[idx] = -2; hard[idx] = 1; }
         }
       }
+    });
+    // Safety zones: no-go cells are hard (and inflated like walls); slow cells only scale speed.
+    let slow = null;
+    zones.filter(z => z.levelId === g.levelId).forEach(z => {
+      forEachZoneCell(g, z, (idx) => {
+        if (z.kind === 'nogo') {
+          if (state[idx] === CELL.VOID) return;
+          state[idx] = CELL.ZONE; cause[idx] = -3; hard[idx] = 1;
+        } else {
+          if (!slow) slow = new Float32Array(n).fill(1);
+          slow[idx] = Math.min(slow[idx], Math.max(0.05, Math.min(1, z.factor || 0.5)));
+        }
+      });
     });
 
     // Vector-propagation distance transform: nearest hard cell for every cell.
@@ -347,10 +366,10 @@ function applyRobot(navMap, building, robot, opts = {}) {
     }
     let free = 0;
     for (let k = 0; k < n; k++) if (state[k] === CELL.FREE || state[k] === CELL.DOOR) free++;
-    levels.set(g.levelId, { grid: g, state, cause, dist, near, freeCells: free });
+    levels.set(g.levelId, { grid: g, state, cause, dist, near, slow, freeCells: free });
   });
 
-  const state = { navMap, building, robot, radius, levels, blocked, obstacles: userObstacles, stairsAsLifts: !!opts.stairsAsLifts };
+  const state = { navMap, building, robot, radius, levels, blocked, obstacles: userObstacles, zones, stairsAsLifts: !!opts.stairsAsLifts };
   state.transitions = buildTransitions(state);
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   state.buildMs = t1 - t0;
@@ -359,6 +378,20 @@ function applyRobot(navMap, building, robot, opts = {}) {
 
 function passable(st) {
   return st === CELL.FREE || st === CELL.DOOR;
+}
+
+/** Visit every cell whose centre lies inside a zone rectangle { x0, z0, x1, z1 } (any corner order). */
+function forEachZoneCell(g, z, visit) {
+  const xa = Math.min(z.x0, z.x1), xb = Math.max(z.x0, z.x1);
+  const za = Math.min(z.z0, z.z1), zb = Math.max(z.z0, z.z1);
+  const i0 = Math.max(0, Math.ceil((xa - g.x0) / g.res - 0.5)), i1 = Math.min(g.w - 1, Math.floor((xb - g.x0) / g.res - 0.5));
+  const j0 = Math.max(0, Math.ceil((za - g.z0) / g.res - 0.5)), j1 = Math.min(g.h - 1, Math.floor((zb - g.z0) / g.res - 0.5));
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) visit(j * g.w + i);
+}
+
+/** Speed factor (0–1] of a slow zone at a cell, 1 outside slow zones. */
+function slowFactorAt(lv, idx) {
+  return lv.slow && idx >= 0 ? lv.slow[idx] : 1;
 }
 
 /** Nearest traversable cell to (x, z) on a level, searching outward up to maxDist metres. */
@@ -508,9 +541,13 @@ function planGridRoute(state, from, to, opts = {}) {
     for (let i = levelList.length - 1; i >= 0; i--) if (node >= offset.get(levelList[i].grid.levelId)) return levelList[i];
     return levelList[0];
   };
+  // opts.avoid: Set of transition groups to leave out ('lift', 'stair'); opts.transitionPenalty: extra cost per level change.
+  const avoid = opts.avoid || null;
+  const penalty = opts.transitionPenalty || 0;
   const trans = new Map();
   state.transitions.forEach(tr => {
     if (!tr.usable || tr.blocked) return;
+    if (avoid && avoid.has(tr.kind === 'lift' ? 'lift' : tr.kind === 'stair' || tr.kind === 'escalator' ? 'stair' : tr.kind)) return;
     const na = offset.get(tr.a.levelId) + tr.a.cell;
     const nb = offset.get(tr.b.levelId) + tr.b.cell;
     if (!trans.has(na)) trans.set(na, []);
@@ -560,6 +597,7 @@ function planGridRoute(state, from, to, opts = {}) {
       const margin = lv.dist[nc] - state.radius;
       const comfort = margin < 0.4 ? 1 + (0.4 - Math.max(0, margin)) * 0.75 : 1;
       let cost = m * g.res * comfort;
+      if (lv.slow) cost /= lv.slow[nc]; // slow zones: cost in time, not distance
       if (extra) cost += extra(g.levelId, nc);
       const nn = base + nc;
       const ng = gc + cost;
@@ -572,7 +610,7 @@ function planGridRoute(state, from, to, opts = {}) {
     const tl = trans.get(node);
     if (tl) {
       for (const { to: nn, tr } of tl) {
-        const ng = gc + tr.cost;
+        const ng = gc + tr.cost + penalty;
         if (ng < gScore[nn]) {
           gScore[nn] = ng;
           came[nn] = node;
@@ -675,7 +713,7 @@ function explainCell(state, levelId, x, z) {
       const src = lv.cause[idx];
       const srcState = src >= 0 ? lv.state[src] : -1;
       const srcEl = srcState === CELL.OBSTACLE || srcState === CELL.BLOCKED ? lv.cause[src] : null;
-      const why = srcState === CELL.VOID ? 'the edge of the floor' : srcState === CELL.USER ? 'a what-if obstacle' : srcState === CELL.BLOCKED ? 'a blocked door' : 'an obstacle';
+      const why = srcState === CELL.VOID ? 'the edge of the floor' : srcState === CELL.USER ? 'a what-if obstacle' : srcState === CELL.BLOCKED ? 'a blocked door' : srcState === CELL.ZONE ? 'a no-go zone' : 'an obstacle';
       return { ...base, step: 'G4', elementId: srcEl, sourceCell: src, detail: `Within ${state.radius.toFixed(2)} m (robot half-width plus clearance) of ${why}; nearest is ${lv.dist[idx].toFixed(2)} m away.` };
     }
     case CELL.DOOR:
@@ -684,8 +722,13 @@ function explainCell(state, levelId, x, z) {
       return { ...base, step: 'G5', elementId: lv.cause[idx], detail: 'This door is blocked in the what-if scenario.' };
     case CELL.USER:
       return { ...base, step: 'G5', elementId: null, detail: 'A what-if obstacle placed in the view.' };
-    default:
-      return { ...base, step: 'G1', elementId: g.floorSrc[idx] >= 0 ? g.floorSrc[idx] : null, detail: `Free floor with ${lv.dist[idx].toFixed(2)} m to the nearest obstruction.` };
+    case CELL.ZONE:
+      return { ...base, step: 'G5', elementId: null, detail: 'Inside a no-go safety zone: robots may not enter.' };
+    default: {
+      const f = slowFactorAt(lv, idx);
+      const slowNote = f < 1 ? ` Inside a slow zone: robots drive at ${Math.round(f * 100)}% speed.` : '';
+      return { ...base, step: f < 1 ? 'G5' : (st === CELL.DOOR ? 'G3' : 'G1'), elementId: g.floorSrc[idx] >= 0 ? g.floorSrc[idx] : null, detail: `Free floor with ${lv.dist[idx].toFixed(2)} m to the nearest obstruction.${slowNote}` };
+    }
   }
 }
 
@@ -756,7 +799,7 @@ function gridReachability(state, building) {
 function navMapSummary(state) {
   const out = { levels: [], free: 0, total: 0 };
   state.levels.forEach(lv => {
-    const counts = [0, 0, 0, 0, 0, 0, 0];
+    const counts = new Array(CELL_STATES).fill(0);
     for (let k = 0; k < lv.state.length; k++) counts[lv.state[k]]++;
     const floorCells = lv.state.length - counts[CELL.VOID];
     out.levels.push({ levelId: lv.grid.levelId, name: lv.grid.levelName, w: lv.grid.w, h: lv.grid.h, counts, free: counts[CELL.FREE] + counts[CELL.DOOR], floorCells, fallback: lv.grid.floorFallback });
@@ -767,6 +810,7 @@ function navMapSummary(state) {
 }
 
 Object.assign(window, {
-  GRID_STEPS, CELL, CELL_LABEL,
+  GRID_STEPS, CELL, CELL_LABEL, CELL_STATES,
   buildNavMap, applyRobot, planGridRoute, explainCell, nearestFreeCell, levelAtHeight, navMapSummary, gridReachability, cellIndex, cellCenter,
+  passable, forEachZoneCell, slowFactorAt, lineOfSight,
 });

@@ -28,6 +28,51 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
   const [snapshot, setSnapshot] = useState(null);
   const [speed, setSpeedState] = useState(5);
   const [showHeat, setShowHeatState] = useState(true);
+  const lidarRef = useRef({ enabled: false, robotId: 1, ...LIDAR_DEFAULTS });
+  const lidarOverlayRef = useRef(null);
+  const [lidar, setLidarState] = useState(lidarRef.current);
+
+  // Simulated LiDAR of one robot, on the current map (closed doors included) with people and robots.
+  const computeLidar = () => {
+    const sim = simRef.current;
+    if (!sim) return;
+    const cfg = lidarRef.current;
+    const rb = cfg.enabled ? (sim.robots.find(r => r.id === cfg.robotId) || sim.robots[0]) : null;
+    if (!rb || rb.state === 'riding' || rb.state === 'stairs') {
+      sim.lidar = null;
+      if (lidarOverlayRef.current) lidarOverlayRef.current.update(null);
+      return;
+    }
+    const body = (sim.scenario.robot ? sim.scenario.robot.width : 0.6) / 2;
+    const dynamic = [];
+    sim.humans.forEach(h => { if (h.levelId === rb.levelId) dynamic.push({ x: h.pos[0], z: h.pos[2], r: 0.22 }); });
+    sim.robots.forEach(o => { if (o !== rb && o.levelId === rb.levelId && o.state !== 'riding' && o.state !== 'stairs') dynamic.push({ x: o.pos[0], z: o.pos[2], r: body }); });
+    const pose = { levelId: rb.levelId, x: rb.pos[0], z: rb.pos[2], heading: rb.heading };
+    sim.lidar = lidarScan(sim.nav, pose, cfg, dynamic, Math.round(sim.time * 10) + 1);
+    sim.lidar.robotName = rb.name;
+    const lv = sim.nav.levels.get(rb.levelId);
+    if (lidarOverlayRef.current && lv) lidarOverlayRef.current.update(sim.lidar, lv.grid.floorY + cfg.mountHeight);
+  };
+  const attachLidar = () => {
+    const v = viewerRef.current;
+    if (!v) return;
+    if (lidarRef.current.enabled && simRef.current) {
+      lidarOverlayRef.current = buildLidarOverlay({ theme });
+      v.setOverlay('sim-lidar', lidarOverlayRef.current.group);
+      computeLidar();
+    } else {
+      v.removeOverlay('sim-lidar');
+      lidarOverlayRef.current = null;
+      if (simRef.current) simRef.current.lidar = null;
+    }
+  };
+  const setLidar = (patch) => {
+    lidarRef.current = { ...lidarRef.current, ...patch };
+    setLidarState(lidarRef.current);
+    attachLidar();
+    if (simRef.current) setSnapshot(simRef.current.summary());
+    viewerRef.current?.invalidate();
+  };
 
   const setStatus = (s) => { statusRef.current = s; setStatusState(s); };
   const setSpeed = (s) => { speedRef.current = s; setSpeedState(s); };
@@ -50,6 +95,7 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
       if (!sim) return;
       if (statusRef.current === 'running') sim.step(dt * speedRef.current);
       agentsRef.current && agentsRef.current.update();
+      if (lidarRef.current.enabled && statusRef.current === 'running') computeLidar();
       const now = performance.now();
       if (now - lastUi.current > 250) { lastUi.current = now; setSnapshot(sim.summary()); }
       if (heatRef.current && now - lastHeat.current > 1500) { lastHeat.current = now; drawHeat(); }
@@ -67,6 +113,8 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
     if (!v) return;
     v.removeOverlay('sim-agents');
     v.removeOverlay('sim-heat');
+    v.removeOverlay('sim-lidar');
+    lidarOverlayRef.current = null;
   };
   const attachOverlays = () => {
     const v = viewerRef.current;
@@ -74,6 +122,7 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
     agentsRef.current = buildAgentsOverlay(simRef.current, { theme });
     v.setOverlay('sim-agents', agentsRef.current.group);
     drawHeat();
+    attachLidar();
   };
 
   const start = (scenario) => {
@@ -102,6 +151,7 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
     stopLoop();
     sim.runToEnd();
     agentsRef.current && agentsRef.current.update();
+    computeLidar();
     setSnapshot(sim.summary());
     setStatus('done');
     drawHeat();
@@ -133,7 +183,7 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
   useEffect(() => () => { stopLoop(); }, []);
   useEffect(() => { reset(); }, [model, navMap]);
 
-  return { sim: simRef, status, snapshot, speed, setSpeed, showHeat, setShowHeat, start, pause, resume, runToEnd, reset };
+  return { sim: simRef, status, snapshot, speed, setSpeed, showHeat, setShowHeat, start, pause, resume, runToEnd, reset, lidar, setLidar };
 }
 
 function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFrameAt, missions = [], removeMission, clearMissions, pendingMission, pickingMission, onPickMission, theme, simRequest, onRequestHandled }) {
@@ -149,6 +199,9 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
     seed: 7,
     taskMode: 'random',
     robot: null, // a profile handed over from Navigate; null means use robotPreset
+    applyZones: false, // safety zones from Navigate are optional here
+    doorEvents: [],
+    doorInfo: 'fleet',
   }));
   const set = (patch) => setSc(s => ({ ...s, ...patch }));
 
@@ -167,6 +220,10 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
       missions: cfg.taskMode === 'missions' ? missionList : [],
       blocked: nav ? nav.blocked : new Set(),
       obstacles: nav ? nav.obstacles : [],
+      zones: nav ? nav.zones : [],
+      applyZones: !!cfg.applyZones && !!(nav && nav.zones.length),
+      doorEvents: (cfg.doorEvents || []).map(({ doorId, closeAt, openAt }) => ({ doorId, closeAt, openAt })),
+      doorInfo: cfg.doorInfo,
     };
   };
 
@@ -275,6 +332,10 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
             {stairs > 0 && (
               <label className="check-field whatif"><input type="checkbox" checked={sc.stairsAsLifts} onChange={e => set({ stairsAsLifts: e.target.checked })} /> What-if: put a lift in each stair core</label>
             )}
+            {nav && nav.zones.length > 0 && (
+              <label className="check-field whatif"><input type="checkbox" checked={sc.applyZones} onChange={e => set({ applyZones: e.target.checked })} /> Apply the {plural(nav.zones.length, 'safety zone')} from Navigate (no-go zones keep robots out, slow zones cap their speed)</label>
+            )}
+            <DoorScheduleEditor building={building} events={sc.doorEvents} onChange={(doorEvents) => set({ doorEvents })} info={sc.doorInfo} onInfo={(doorInfo) => set({ doorInfo })} onSelectIds={onSelectIds} />
             <p className="pane-note">
               The model has {plural(lifts, 'lift')} and {plural(stairs, 'stair')}. {lifts === 0 && !sc.stairsAsLifts && !preset.canUseStairs ? 'Without lifts this robot stays on its start level.' : ''}
               {whatIf > 0 ? ` ${plural(whatIf, 'what-if change')} from Navigate (blocked doors and obstacles) apply.` : ''}
@@ -291,6 +352,8 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
               {status !== 'idle' && status !== 'done' && <button type="button" className="btn btn-ghost" onClick={simApi.runToEnd}>Run to end</button>}
             </div>
           </div>
+
+          <ExperimentsSection model={model} building={building} navMap={navMap} baseScenario={() => scenarioFrom(sc, missions)} missionMode={sc.taskMode === 'missions'} disabled={sc.taskMode === 'missions' && missions.length === 0} />
 
           {snap && (
             <>
@@ -317,6 +380,9 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
                   <Kpi k="Near misses" v={t.nearMisses} tone={t.nearMisses ? 'warn' : null} />
                   <Kpi k="Closest approach" v={t.minSeparation != null ? `${t.minSeparation.toFixed(2)} m` : '—'} />
                   <Kpi k="Deadlocks resolved" v={t.deadlocks} tone={t.deadlocks ? 'warn' : null} />
+                  {(t.doorChanges > 0 || t.replans > 0) && <Kpi k="Re-plans for doors" v={t.replans} />}
+                  {(t.doorChanges > 0 || t.blockedTime > 0) && <Kpi k="Waiting at closed doors" v={fmtSec(t.blockedTime)} tone={t.blockedTime ? 'warn' : null} />}
+                  {t.zonesApplied > 0 && <Kpi k="Slowed in zones" v={fmtSec(t.zoneSlowTime)} />}
                 </div>
                 {t.unreachable > 0 && <p className="pane-note warn-note">{plural(t.unreachable, 'task')} had no reachable destination and were skipped.</p>}
                 <div className="toggle-row">
@@ -378,6 +444,8 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
                 )}
               </div>
 
+              <LidarSection simApi={simApi} model={model} />
+
               <SimEvents sim={simApi.sim.current} onFrameAt={onFrameAt} />
             </>
           )}
@@ -389,11 +457,12 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
 
 function SimEvents({ sim, onFrameAt }) {
   if (!sim) return null;
-  const list = sim.events.filter(e => e.kind === 'near-miss' || e.kind === 'deadlock' || e.kind === 'unreachable').slice(-12).reverse();
+  const kinds = new Set(['near-miss', 'deadlock', 'unreachable', 'door-closed', 'door-opened', 'replan', 'blocked']);
+  const list = sim.events.filter(e => kinds.has(e.kind)).slice(-14).reverse();
   return (
     <div className="nav-section">
-      <h3><Icons.Alert size={16} /> Safety and conflict log</h3>
-      {list.length === 0 ? <p className="pane-note">No near misses or deadlocks so far.</p> : (
+      <h3><Icons.Alert size={16} /> Safety, conflict and door log</h3>
+      {list.length === 0 ? <p className="pane-note">No near misses, deadlocks or door changes so far.</p> : (
         <ul className="event-list">
           {list.map((e, i) => (
             <li key={i} data-kind={e.kind}>
@@ -420,7 +489,7 @@ function Kpi({ k, v, tone }) {
 }
 
 function robotStateLabel(s) {
-  return { moving: 'Driving', 'lift-wait': 'Waiting for lift', riding: 'In lift', stairs: 'On stairs', done: 'Done', idle: 'Idle' }[s] || s;
+  return { moving: 'Driving', 'lift-wait': 'Waiting for lift', riding: 'In lift', stairs: 'On stairs', blocked: 'Waiting at a closed door', done: 'Done', idle: 'Idle' }[s] || s;
 }
 
 function clampInt(v, min, max) {
@@ -428,4 +497,4 @@ function clampInt(v, min, max) {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : min;
 }
 
-Object.assign(window, { useSimulation, SimulatePanel });
+Object.assign(window, { useSimulation, SimulatePanel, Kpi, fmtSec, fmtClock, clampInt });
