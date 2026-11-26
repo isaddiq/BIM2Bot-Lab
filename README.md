@@ -98,7 +98,7 @@ The app has three workspaces, one for each version of the project plan. Every pa
         <li>Fleets of up to 8 robots, or custom missions</li>
         <li>Lift scheduling, congestion heatmaps</li>
         <li>People, near misses and safety log</li>
-        <li>🆕 3D robot models per robot profile</li>
+        <li>🆕 8 robot profiles with 3D models, incl. 4 cleaning robots</li>
         <li>🆕 Simulated 2D LiDAR on every robot</li>
         <li>🆕 Door schedules with re-planning</li>
         <li>🆕 Batch experiments across seeds</li>
@@ -209,7 +209,7 @@ Each map cell and graph edge records the IFC element that produced it. The dotte
 
 ```mermaid
 flowchart LR
-    A["🤖 Robot profile<br/>width · height · stairs · lifts"] --> B["🧮 Planner<br/>room graph or grid"]
+    A["🤖 Robot profile<br/>body · height · stairs · lifts"] --> B["🧮 Planner<br/>room graph or grid"]
     B --> C["📍 Route<br/>rooms, or clicks on plan / 3D"]
     C --> D["❓ What if<br/>block doors · obstacles · lifts"]
     D --> E["⚠️ Safety zones<br/>no-go · slow"]
@@ -243,7 +243,7 @@ The simulation runs on the occupancy grids. It is deterministic and seeded, with
 | --- | --- |
 | 🤖 **Fleet** | Up to 8 robots on random deliveries, or **custom missions**: click a start and a goal and each robot shuttles between them. Every trip is re-planned on the grid and drawn along its real A\* path. |
 | 🛗 **Lifts** | Cars with travel speed, door dwell and capacity, scheduled first come, first served or nearest car with collective stops. |
-| 🚦 **Congestion** | Robots keep a body width apart, detour locally and resolve head-on deadlocks. Waiting time per cell becomes a heatmap and a ranked hotspot list. |
+| 🚦 **Congestion** | Robots keep their footprints apart and detour locally. In a head-on deadlock one pulls over and lets the other pass, and any body overlap is counted. Waiting time per cell becomes a heatmap and a ranked hotspot list. |
 | 🚶 **People** | People walk between rooms. Robots slow within 2 m and stop within 0.8 m. Encounters, near misses and the closest approach are logged with time and place. |
 | 🚪 **Door schedule** | Close doors at set times and reopen them. Robots hear about a closure from the fleet manager at once, or on arrival (onboard sensing within 3 m), then re-plan or wait. |
 | ⚠️ **Safety zones** | Zones from Navigate, optional here and off by default. |
@@ -258,25 +258,48 @@ When one level is shown, only the robots, people and scans on that level are dra
 ## Robots
 
 <p align="center">
-  <img src="assets/images/readme/robots.webp" alt="The four robot models: a wheeled delivery robot, a compact stacked-plate robot, a quadruped and a hospital logistics cart" width="90%" />
+  <img src="assets/images/readme/robots.webp" alt="The eight robot models at the same scale. Top row: a wheeled delivery robot, a compact stacked-plate robot, a quadruped and a hospital logistics cart. Bottom row, cleaning robots: R3 Vac, R3 Scrub Pro, R5 and S3" width="90%" />
+  <br /><sub>Top: generic profiles. Bottom: cleaning robots R3 Vac, R3 Scrub Pro, R5 and S3. All drawn at the same scale.</sub>
 </p>
 
-Each robot profile has its own 3D model in the simulation, coloured per robot. Wheels and LiDAR spin as the robots move, and the quadruped trots.
+Choose from eight robot profiles in Navigate and Simulate. Each has its own 3D model, coloured per robot in a fleet. Wheels, side brushes and LiDAR spin as the robots move, and the quadruped trots.
 
-| Profile | Model | Width | Height | Stairs | Lifts |
-| ------- | ----- | ----: | -----: | :----: | :---: |
-| **Wheeled indoor robot** | Delivery robot with trays and a face screen | 0.60 m | 1.4 m | — | ✅ |
-| **Compact inspection robot** | Stacked-plate research platform with a spinning LiDAR | 0.45 m | 0.6 m | — | ✅ |
-| **Legged robot** | Quadruped with a trotting gait | 0.50 m | 0.7 m | ✅ | — |
-| **Hospital logistics cart** | Autonomous base carrying a stainless cabinet | 0.90 m | 1.6 m | — | ✅ |
-| **LionsBot R3 Vac** | Compact vacuum, box body 0.52 × 0.48 m, 53 kg | 0.48 m | 0.66 m | — | ✅ |
-| **LionsBot R3 Scrub Pro** | Compact scrubber with rear squeegee, 0.64 × 0.57 m, 85.5 kg | 0.57 m | 0.83 m | — | ✅ |
-| **LionsBot R5** | Floor scrubber with sensor bar and hose, 0.69 × 0.69 m, 200 kg | 0.69 m | 1.13 m | — | ✅ |
-| **LionsBot S3** | Low, wide sweeper with twin side brushes and a beacon, 0.91 × 0.78 m, 80 kg | 0.78 m | 0.48 m | — | ✅ |
+### Generic profiles
 
-The LionsBot (Singapore) profiles use the body sizes and weights published on lionsbot.com. Their models are stylised from those sizes: no logos and no official CAD. Lift riding is a modelling assumption. Custom profiles pick the closest model. The models are procedural (Three.js), so the repository needs no third-party 3D assets.
+| Profile | Model | Body | Height | Stairs | Lifts |
+| ------- | ----- | ---- | -----: | :----: | :---: |
+| **Wheeled indoor robot** | Delivery robot with trays and a face screen | Round, 0.60 m | 1.40 m | — | ✅ |
+| **Compact inspection robot** | Stacked-plate research platform with a spinning LiDAR | Round, 0.45 m | 0.60 m | — | ✅ |
+| **Legged robot** | Quadruped with a trotting gait | Box, 1.00 × 0.50 m | 0.70 m | ✅ | — |
+| **Hospital logistics cart** | Autonomous base carrying a stainless cabinet | Box, 0.90 × 0.90 m | 1.60 m | — | ✅ |
 
-**Bodies, not points.** Box-shaped robots plan with their real footprint. The planner records which of four headings the body fits in at each cell, and it checks turns on the spot at the cells where the path changes direction. Each robot also has a keep-away margin, so paths stay mid-corridor and round corners wide. Smoothing never brings a path closer to an obstacle than the search left it. The route card reports the closest approach and the IFC element responsible. In the simulation, robots turn at a limited rate and keep their footprints apart. When two robots block each other, one pulls over into free floor and lets the other pass. Any overlap of two bodies is counted as a result. The ROS 2 export includes `nav2_footprint.yaml` with the same footprint, padding and inflation radius.
+### Cleaning robots
+
+<p align="center">
+  <img src="assets/images/readme/lionsbot.webp" alt="The four cleaning robot models at the same scale: the compact R3 Vac, the taller R3 Scrub Pro with a handle and water tanks, the R5 floor scrubber with a sensor bar and recovery hose, and the low, wide S3 sweeper with a beacon light" width="90%" />
+  <br /><sub>Left to right: R3 Vac, R3 Scrub Pro, R5 and S3, at the same scale. Stylised from the published sizes.</sub>
+</p>
+
+| Profile | Type | Model | Body (L × W × H) | Weight | Top speed |
+| ------- | ---- | ----- | ---------------- | -----: | --------: |
+| **LionsBot R3 Vac** | Vacuum | Compact body, status display, handle, side brush | 521 × 482 × 655 mm | 53 kg | — |
+| **LionsBot R3 Scrub Pro** | Scrubber | Taller body with water tanks, rear squeegee, side brush | 635 × 570 × 828 mm | 85.5 kg | — |
+| **LionsBot R5** | Floor scrubber | Scrubbing deck, sensor bar, recovery hose, squeegee | 690 × 690 × 1,125 mm | 200 kg | 1.1 m/s |
+| **LionsBot S3** | Sweeper | Low wide body, camera array, twin side brushes, beacon | 910 × 780 × 480 mm | 80 kg | 1.2 m/s |
+
+Sizes, weights and speeds are from the product pages on [lionsbot.com](https://www.lionsbot.com/robots), checked in November 2026. A dash means no speed is published. The simulator drives every robot at the speed set in the scenario, not at the published top speed. All four ride lifts and none climb stairs; lift riding is a modelling assumption. The models are stylised from the published sizes, with no logos and no official CAD.
+
+### Custom robots
+
+Edit any profile in Navigate: width, height, clearance, round or box body, length, keep-away margin, stairs and lifts. A custom profile keeps the model of the preset it started from, or picks the closest one by size and abilities. The models are procedural (Three.js), so the repository needs no third-party 3D assets.
+
+### Bodies, not points
+
+- **Footprint planning.** Box-shaped robots plan with their real footprint. The planner records which of four headings the body fits in at each cell, and it checks turns on the spot where the path changes direction.
+- **Keep-away margin.** Paths stay mid-corridor and round corners wide. Smoothing never brings a path closer to an obstacle than the search left it.
+- **Closest approach.** The route card reports the smallest gap between the body and an obstacle, and links to the IFC element responsible.
+- **Rigid bodies in the simulation.** Robots turn at a limited rate and keep their footprints apart. When two robots block each other, one pulls over into free floor and lets the other pass. If there is no room to pull over, one is let through and the overlap is counted under *Body overlaps*.
+- **Same body in ROS 2.** The export includes `nav2_footprint.yaml` with the footprint (or radius), padding and inflation radius.
 
 ## Sample models
 
@@ -416,8 +439,9 @@ Nothing under `core/` depends on the DOM or Three.js, so it runs unchanged in No
 | Simulated LiDAR | `lidarScan(state, { levelId, x, z, heading }, { beams, fov, range, mountHeight, noise }, people)` |
 | Explain a map cell | `explainCell(state, levelId, x, z)` |
 | Simulate | `createSimulation({ model, building, navMap }, scenario)`, then `step(dt)`, `runToEnd()` and `summary()`. The scenario takes `zones` with `applyZones`, and `doorEvents: [{ doorId, closeAt, openAt }]` with `doorInfo: 'fleet' \| 'onboard'` |
-| Robot models | `buildRobotModel(kind, width, color)` with `kind` one of `wheeled`, `compact`, `legged`, `wide` |
-| Record demos | Open `index.html?capture=1`: `window.__bim2botCapture` steps a paused simulation frame by frame (`step`, `start`, `rooms`, `cut`, `look`) for smooth 1× recordings |
+| Robot models | `buildRobotModel(kind, width, color, profile)` with `kind` one of `wheeled`, `compact`, `legged`, `wide`, `lb-r3vac`, `lb-r3scrubpro`, `lb-r5`, `lb-s3`; `robotKindOf(profile)` picks one |
+| Robot body | `robotFootprint(profile)`, `footprintGap(level, x, z, heading, footprint)` and `routeClearance(state, route)` in `core/navmap.jsx` |
+| Record demos | Open `index.html?capture=1`: `window.__bim2botCapture` steps a paused simulation frame by frame (`step`, `start`, `rooms`, `cut`, `look`, `frame`, `probe`) for smooth 1× recordings |
 
 </details>
 

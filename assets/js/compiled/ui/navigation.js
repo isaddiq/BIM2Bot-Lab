@@ -13,7 +13,7 @@
   ];
   function RobotPresetOptions({ detail }) {
     const label = (p) => detail ? detail(p) : p.name;
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, ROBOT_PRESETS.filter((p) => !p.maker).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, label(p))), /* @__PURE__ */ React.createElement("optgroup", { label: "LionsBot (Singapore)" }, ROBOT_PRESETS.filter((p) => p.maker === "LionsBot").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, label(p)))));
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, ROBOT_PRESETS.filter((p) => !p.maker).map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, label(p))), /* @__PURE__ */ React.createElement("optgroup", { label: "Cleaning robots" }, ROBOT_PRESETS.filter((p) => p.maker === "LionsBot").map((p) => /* @__PURE__ */ React.createElement("option", { key: p.id, value: p.id }, label(p)))));
   }
   const STATUS_LABEL = { pass: "Pass", warn: "Warning", fail: "Blocking", info: "Note" };
   function StatusIcon({ status, size = 13 }) {

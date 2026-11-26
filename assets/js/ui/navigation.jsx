@@ -16,12 +16,12 @@ const ROBOT_PRESETS = [
   { id: 'lb-s3', maker: 'LionsBot', name: 'LionsBot S3', shape: 'rect', length: 0.91, width: 0.78, height: 0.48, mass: 80, maxSpeed: 1.2, clearance: 0.05, canUseStairs: false, canUseLifts: true },
 ];
 
-/** Preset options, with the LionsBot models in their own group. */
+/** Preset options, with the cleaning robots in their own group. */
 function RobotPresetOptions({ detail }) {
   const label = (p) => (detail ? detail(p) : p.name);
   return <>
     {ROBOT_PRESETS.filter(p => !p.maker).map(p => <option key={p.id} value={p.id}>{label(p)}</option>)}
-    <optgroup label="LionsBot (Singapore)">
+    <optgroup label="Cleaning robots">
       {ROBOT_PRESETS.filter(p => p.maker === 'LionsBot').map(p => <option key={p.id} value={p.id}>{label(p)}</option>)}
     </optgroup>
   </>;
