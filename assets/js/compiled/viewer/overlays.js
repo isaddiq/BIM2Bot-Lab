@@ -74,16 +74,15 @@
       if (pts[i].distanceTo(pts[i + 1]) > 1e-4) path.add(new THREE.LineCurve3(pts[i], pts[i + 1]));
     }
     if (path.curves.length) {
-      const tube = new THREE.Mesh(new THREE.TubeGeometry(path, Math.max(8, path.curves.length * 12), 0.07, 8, false), overlayMaterial(colors.route));
-      tube.renderOrder = 33;
-      group.add(tube);
+      const geo = new THREE.TubeGeometry(path, Math.max(8, path.curves.length * 12), 0.07, 8, false);
+      addWithXray(group, geo, colors.route, 33);
     }
     const ring = (p, color) => {
-      const m = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.06, 10, 36), overlayMaterial(color));
-      m.rotation.x = Math.PI / 2;
-      m.position.copy(p);
-      m.renderOrder = 34;
-      group.add(m);
+      const m = addWithXray(group, new THREE.TorusGeometry(0.42, 0.06, 10, 36), color, 34);
+      m.forEach((x) => {
+        x.rotation.x = Math.PI / 2;
+        x.position.copy(p);
+      });
     };
     ring(pts[0], colors.start);
     ring(pts[pts.length - 1], colors.goal);
@@ -176,12 +175,58 @@
     });
     return group;
   }
+  function addWithXray(group, geo, color, order, xrayOpacity = 0.22) {
+    const solid = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false }));
+    solid.renderOrder = order;
+    const xray = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: xrayOpacity, depthTest: false, depthWrite: false }));
+    xray.renderOrder = order - 1;
+    group.add(xray, solid);
+    return [solid, xray];
+  }
+  function sweptBodyRibbon(route, footprint, color) {
+    const group = new THREE.Group();
+    const hw = footprint.width / 2;
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.2, depthWrite: true, depthFunc: THREE.LessDepth, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
+    route.legs.forEach((leg) => {
+      if (leg.type !== "walk" || !leg.points || leg.points.length < 2) return;
+      const y = leg.points[0][1] + 0.025;
+      const pos = [];
+      for (let k = 1; k < leg.points.length; k++) {
+        const a = leg.points[k - 1], b = leg.points[k];
+        const dx = b[0] - a[0], dz = b[2] - a[2];
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-6) continue;
+        const nx = -dz / len * hw, nz = dx / len * hw;
+        const p = [[a[0] + nx, a[2] + nz], [a[0] - nx, a[2] - nz], [b[0] - nx, b[2] - nz], [b[0] + nx, b[2] + nz]];
+        [0, 1, 2, 0, 2, 3].forEach((i) => pos.push(p[i][0], y, p[i][1]));
+      }
+      if (!pos.length) return;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      const strip = new THREE.Mesh(geo, mat);
+      strip.renderOrder = 31;
+      group.add(strip);
+      leg.points.forEach((p) => {
+        const disc = new THREE.Mesh(new THREE.CircleGeometry(hw, 24), mat);
+        disc.rotation.x = -Math.PI / 2;
+        disc.position.set(p[0], y, p[2]);
+        disc.renderOrder = 31;
+        group.add(disc);
+      });
+    });
+    return group;
+  }
   function buildGridRouteOverlay(route, opts = {}) {
     const pts = [];
     route.legs.forEach((l) => {
       if (l.points) l.points.forEach((p) => pts.push(p));
     });
-    return buildRouteOverlay({ points: pts }, opts);
+    const group = buildRouteOverlay({ points: pts }, opts);
+    if (opts.footprint) {
+      const colors = NAV_COLORS[opts.theme === "dark" ? "dark" : "light"];
+      group.add(sweptBodyRibbon(route, opts.footprint, colors.route));
+    }
+    return group;
   }
   function buildMarkersOverlay({ building, theme, start, goal, missions = [], missionPaths = [], pending }) {
     const colors = NAV_COLORS[theme === "dark" ? "dark" : "light"];
@@ -217,7 +262,7 @@
       (missionPaths[i] || []).forEach((leg) => {
         const y = floorY(leg.levelId) + 0.08;
         const geo = new THREE.BufferGeometry().setFromPoints(leg.points.map((q) => new THREE.Vector3(q[0], y, q[2])));
-        const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: c, dashSize: 0.3, gapSize: 0.2, depthTest: false, transparent: true }));
+        const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: c, dashSize: 0.3, gapSize: 0.2, transparent: true }));
         line.computeLineDistances();
         line.renderOrder = 35;
         group.add(line);
@@ -226,15 +271,21 @@
     if (pending) pin(pending, colors.start, false);
     return group;
   }
+  const ROBOT_MODEL_SPECS = {
+    "lb-r3vac": { L: 0.521, W: 0.482, H: 0.655 },
+    "lb-r3scrubpro": { L: 0.635, W: 0.57, H: 0.828 },
+    "lb-r5": { L: 0.69, W: 0.69, H: 1.125 },
+    "lb-s3": { L: 0.91, W: 0.78, H: 0.48 }
+  };
   function robotKindOf(robot) {
     if (!robot) return "wheeled";
-    if (["wheeled", "compact", "legged", "wide"].includes(robot.id)) return robot.id;
+    if (["wheeled", "compact", "legged", "wide"].includes(robot.id) || ROBOT_MODEL_SPECS[robot.id]) return robot.id;
     if (robot.canUseStairs) return "legged";
     if (robot.width < 0.5) return "compact";
     if (robot.width > 0.8) return "wide";
     return "wheeled";
   }
-  function buildRobotModel(kind, width, accentColor) {
+  function buildRobotModel(kind, width, accentColor, profile) {
     const g = new THREE.Group();
     const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.05, ...extra });
     const accent = std(accentColor, { roughness: 0.4 });
@@ -259,7 +310,96 @@
       hub.rotation.y = 0;
       wheels.push({ mesh: m, r });
     };
-    if (kind === "compact") {
+    const block = (L, W, h, r, mat, y0, x = 0, z = 0) => {
+      const rr = Math.max(5e-3, Math.min(r, L / 2 - 1e-3, W / 2 - 1e-3));
+      const sh = new THREE.Shape();
+      const hx = L / 2, hz = W / 2;
+      sh.moveTo(-hx + rr, -hz);
+      sh.lineTo(hx - rr, -hz);
+      sh.quadraticCurveTo(hx, -hz, hx, -hz + rr);
+      sh.lineTo(hx, hz - rr);
+      sh.quadraticCurveTo(hx, hz, hx - rr, hz);
+      sh.lineTo(-hx + rr, hz);
+      sh.quadraticCurveTo(-hx, hz, -hx, hz - rr);
+      sh.lineTo(-hx, -hz + rr);
+      sh.quadraticCurveTo(-hx, -hz, -hx + rr, -hz);
+      const geo = new THREE.ExtrudeGeometry(sh, { depth: h, bevelEnabled: false, curveSegments: 6 });
+      geo.rotateX(-Math.PI / 2);
+      return add(geo, mat, x, y0, z);
+    };
+    const sideBrush = (r, x, z) => {
+      const hub = add(cyl(r * 0.25, r * 0.25, 0.02, 16), dark, x, 0.025, z);
+      for (let k = 0; k < 3; k++) {
+        const armGeo = new THREE.BoxGeometry(r, 6e-3, 0.012);
+        armGeo.translate(r / 2, 0, 0);
+        const arm = add(armGeo, light, 0, -8e-3, 0, hub);
+        arm.rotation.y = k * 2 * Math.PI / 3;
+      }
+      spinners.push(hub);
+    };
+    const display = (w, h, x, y) => {
+      const panel = add(new THREE.BoxGeometry(0.02, h, w), black, x, y, 0);
+      panel.rotation.z = 0.35;
+      for (const ez of [-w * 0.18, w * 0.18]) add(new THREE.BoxGeometry(4e-3, h * 0.32, w * 0.12), glow, 0.012, 0.01, ez, panel);
+      return panel;
+    };
+    const handle = (W, x, y) => {
+      for (const sz of [-1, 1]) add(cyl(0.012, 0.012, 0.07, 8), steel, x, y - 0.035, sz * W * 0.32);
+      const bar = add(cyl(0.014, 0.014, W * 0.66, 10), steel, x, y, 0);
+      bar.rotation.x = Math.PI / 2;
+    };
+    const spec = ROBOT_MODEL_SPECS[kind];
+    if (spec) {
+      const W = width || spec.W;
+      const L = profile && profile.length ? profile.length : spec.L * (W / spec.W);
+      const H = profile && profile.height ? profile.height : spec.H;
+      if (kind === "lb-r3vac" || kind === "lb-r3scrubpro") {
+        const scrub = kind === "lb-r3scrubpro";
+        const deckH = scrub ? 0.15 : 0.12;
+        const deckL = L * (scrub ? 0.9 : 1), deckX = scrub ? L * 0.05 : 0;
+        block(deckL, W, deckH, 0.07, dark, 0.02, deckX);
+        block(deckL + 0.01, W + 0.01, 0.035, 0.075, accent, 0.06, deckX);
+        block(L * 0.95, W * 0.95, 0.035, 0.065, black, deckH + 0.02);
+        const bodyY = deckH + 0.055;
+        block(L * 0.93, W * 0.93, H - bodyY - 0.06, 0.08, white, bodyY);
+        if (scrub) block(L * 0.6, W * 0.94, 0.16, 0.06, light, bodyY + 0.12, -L * 0.12);
+        block(L * 0.86, W * 0.86, 0.03, 0.07, light, H - 0.06);
+        add(new THREE.BoxGeometry(0.01, 0.05, W * 0.6), accent, L * 0.466, bodyY + (H - bodyY) * 0.3, 0);
+        display(W * 0.5, 0.13, L * 0.475, H - 0.15).rotation.z = 0.12;
+        handle(W, -L * 0.42, H - 5e-3);
+        sideBrush(scrub ? 0.14 : 0.1, L * 0.36, W * 0.4);
+        if (scrub) {
+          add(new THREE.BoxGeometry(0.035, 0.035, Math.min(W * 1.04, 0.62)), black, -L / 2 + 0.02, 0.025, 0);
+          for (const sz of [-1, 1]) wheel(0.02, 0.015, -L / 2 + 0.03, sz * W * 0.52);
+        }
+        for (const sz of [-1, 1]) wheel(0.045, 0.03, 0, sz * W * 0.44);
+      } else if (kind === "lb-r5") {
+        block(L, W, 0.17, 0.1, dark, 0.03);
+        block(L + 0.01, W + 0.01, 0.04, 0.105, accent, 0.09);
+        add(new THREE.BoxGeometry(0.04, 0.035, W * 1.02), black, -L / 2 + 0.03, 0.025, 0);
+        block(L * 0.93, W * 0.93, 0.6, 0.12, white, 0.2);
+        block(L * 0.94, W * 0.94, 0.03, 0.12, accent, 0.5);
+        block(L * 0.7, W * 0.82, H - 0.86, 0.1, white, 0.8, -L * 0.06);
+        add(new THREE.BoxGeometry(0.03, 0.07, W * 0.7), black, L * 0.29, H - 0.16, 0);
+        add(new THREE.BoxGeometry(4e-3, 0.012, W * 0.56), glow, L * 0.306, H - 0.16, 0);
+        block(L * 0.66, W * 0.78, 0.03, 0.09, light, H - 0.06, -L * 0.06);
+        display(W * 0.42, 0.14, L * 0.22, H - 0.05);
+        add(new THREE.TorusGeometry(0.16, 0.022, 8, 24, Math.PI), dark, -L * 0.3, 0.55, W * 0.475);
+        for (const sz of [-1, 1]) wheel(0.07, 0.05, -L * 0.1, sz * W * 0.47);
+        sideBrush(0.15, L * 0.38, W * 0.38);
+      } else {
+        block(L, W, 0.15, 0.14, dark, 0.03);
+        block(L + 0.01, W + 0.01, 0.04, 0.145, accent, 0.08);
+        block(L * 0.96, W * 0.94, H - 0.25, 0.16, white, 0.18);
+        block(L * 0.4, W * 0.88, H - 0.27, 0.12, light, 0.19, -L * 0.27);
+        block(L * 0.9, W * 0.86, 0.02, 0.15, accent, H - 0.07);
+        add(new THREE.BoxGeometry(0.03, 0.06, W * 0.62), black, L * 0.475, H * 0.62, 0);
+        for (const z of [-W * 0.22, 0, W * 0.22]) add(new THREE.SphereGeometry(0.016, 12, 8), glow, L * 0.49, H * 0.62, z);
+        add(cyl(0.035, 0.04, 0.05, 20), glow, -L * 0.3, H - 0.025, 0);
+        for (const sz of [-1, 1]) sideBrush(0.15, L * 0.42, sz * W * 0.4);
+        for (const sz of [-1, 1]) wheel(0.06, 0.045, -L * 0.05, sz * W * 0.47);
+      }
+    } else if (kind === "compact") {
       const R = width / 2;
       add(cyl(R, R, 0.09), dark, 0, 0.065, 0);
       const bump = add(new THREE.TorusGeometry(R, 0.012, 8, 48), accent, 0, 0.06, 0);
@@ -357,16 +497,19 @@
     const profile = sim.scenario.robot || null;
     const kind = robotKindOf(profile);
     const width = profile && profile.width ? profile.width : 0.6;
-    const depthReset = new THREE.Mesh(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0, 0, 0, 0], 3)), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false }));
-    depthReset.frustumCulled = false;
-    depthReset.renderOrder = 39;
-    depthReset.onBeforeRender = (renderer) => renderer.clearDepth();
-    group.add(depthReset);
+    const fp = sim.nav && sim.nav.footprint ? sim.nav.footprint : robotFootprint(profile || DEFAULT_ROBOT_PROFILE);
+    const bodyH = profile && profile.height ? Math.min(profile.height, 1.6) : 1.2;
+    const xrayGeo = fp.rect ? new THREE.BoxGeometry(fp.length, bodyH, fp.width) : new THREE.CylinderGeometry(fp.width / 2, fp.width / 2, bodyH, 28);
+    xrayGeo.translate(0, bodyH / 2, 0);
+    const depthReset = null;
     const robots = sim.robots.map((rb) => {
       const g = new THREE.Group();
       const color = palette[rb.colorIndex] || rb.color;
-      const model = buildRobotModel(kind, width, new THREE.Color(color));
+      const model = buildRobotModel(kind, width, new THREE.Color(color), profile);
       g.add(model.group);
+      const xray = new THREE.Mesh(xrayGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.32, depthWrite: false, depthFunc: THREE.GreaterDepth }));
+      xray.userData.xray = true;
+      g.add(xray);
       const ring = new THREE.Mesh(new THREE.RingGeometry(sim.scenario.safetyRadius - 0.03, sim.scenario.safetyRadius, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }));
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.02;
@@ -422,7 +565,7 @@
     group.traverse((o) => {
       if (!o.material || o === depthReset) return;
       o.material.transparent = true;
-      o.renderOrder = 40;
+      o.renderOrder = o.userData.xray ? 38 : 40;
     });
     update();
     return { group, update };

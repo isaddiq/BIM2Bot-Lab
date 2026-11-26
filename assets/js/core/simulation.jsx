@@ -31,7 +31,7 @@ const SIM_DEFAULTS = {
   detectRadius: 2.0,     // m
   safetyRadius: 0.8,     // m
   slowFactor: 0.35,
-  deadlockTime: 6,       // s of waiting before a robot is let through
+  deadlockTime: 6,       // s of mutual waiting before one robot pulls over for the other
   maxTime: 3600,         // s
   seed: 7,
   applyZones: false,     // safety zones from Navigate are optional in the simulation
@@ -39,7 +39,9 @@ const SIM_DEFAULTS = {
   doorInfo: 'fleet',     // 'fleet': robots know at once | 'onboard': robots notice within doorSenseRange
   doorSenseRange: 3,     // m along the path
   retryInterval: 5,      // s between re-plan attempts while no route exists
+  turnRate: 1.5,         // rad/s: robots turn in place (differential drive) before driving a new segment
 };
+const TURN_DRIVE_LIMIT = 0.35; // rad: above this heading error the robot turns on the spot instead of driving
 
 // Validated categorical palette (fixed order; CVD-checked against the light and dark surfaces).
 const ROBOT_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
@@ -89,6 +91,8 @@ function createSimulation(ctx, scenario = {}) {
     }
   }
   const robotRadius = nav.radius;
+  const footprint = nav.footprint || robotFootprint(robotProfile);
+  const turnRate = robotProfile.turnRate || sc.turnRate;
 
   // Rooms a robot can start from or deliver to (centroid snaps to a free cell).
   const rooms = [];
@@ -212,7 +216,7 @@ function createSimulation(ctx, scenario = {}) {
       task: null,
       lift: null,
       stair: null,
-      stats: { dist: 0, moveT: 0, waitT: 0, liftWaitT: 0, rideT: 0, stairT: 0, slowT: 0, stopT: 0, zoneSlowT: 0, blockedT: 0, replans: 0, tasks: 0, taskTimes: [], unreachable: 0 },
+      stats: { dist: 0, moveT: 0, waitT: 0, liftWaitT: 0, rideT: 0, stairT: 0, slowT: 0, stopT: 0, zoneSlowT: 0, blockedT: 0, turnT: 0, replans: 0, tasks: 0, taskTimes: [], unreachable: 0 },
     });
   }
 
@@ -275,6 +279,11 @@ function createSimulation(ctx, scenario = {}) {
     if (leg.type === 'walk') {
       r.state = 'moving';
       r.ptIdx = 0;
+      // Robots start out facing their first segment rather than turning on the spot at t = 0.
+      if (time === 0 && leg.points.length > 1) {
+        const a = leg.points[0], b = leg.points[leg.points.length > 2 && Math.hypot(leg.points[1][0] - a[0], leg.points[1][2] - a[2]) < 0.05 ? 2 : 1];
+        r.heading = Math.atan2(b[2] - a[2], b[0] - a[0]);
+      }
       // A leg planned before a closure (e.g. before a lift ride) is checked when it starts.
       if (closedDoors.size && sc.doorInfo === 'fleet' && closedDoorAhead(r, Infinity)) replan(r, 'closed door');
     } else if (leg.type === 'lift') {
@@ -297,6 +306,7 @@ function createSimulation(ctx, scenario = {}) {
   };
 
   const advance = (r) => {
+    r.yieldStreak = 0;
     r.legIdx++;
     if (r.legIdx >= r.legs.length) finishTask(r);
     else startLeg(r);
@@ -437,6 +447,8 @@ function createSimulation(ctx, scenario = {}) {
   let time = 0;
   const hri = { encounters: 0, nearMisses: 0, minSeparation: Infinity, pairs: new Map() };
   let deadlocks = 0;
+  let yields = 0;   // deadlocks resolved by one robot pulling over
+  let contacts = 0; // deadlocks resolved by letting bodies overlap (no room to pull over)
 
   robots.forEach(r => nextTask(r));
 
@@ -514,9 +526,11 @@ function createSimulation(ctx, scenario = {}) {
   };
 
   // ---- Robot motion ------------------------------------------------------------------
-  // A robot never moves closer than one body width to another robot.
+  // Rigid bodies: a robot never moves closer to another than their footprints allow at any
+  // heading (twice the inflation radius for round robots, the corner-to-corner span for boxes).
+  const minSep = Math.max(robotRadius * 2, 2 * (footprint.outer - footprint.clearance));
   const conflictWith = (r, nx, nz) => {
-    const minD = robotRadius * 2;
+    const minD = minSep;
     for (const o of robots) {
       // Riding, climbing or finished (docked) robots are not on the floor.
       if (o === r || o.levelId !== r.levelId || o.state === 'riding' || o.state === 'stairs' || o.state === 'done') continue;
@@ -549,6 +563,98 @@ function createSimulation(ctx, scenario = {}) {
     leg.points = route.legs[0].points.map(q => q.slice());
     r.ptIdx = 0;
     return true;
+  };
+
+  // Rigid bodies cannot pass through each other. When two robots block each other, one pulls
+  // over: it drives to the nearest free spot clear of the other's remaining path, waits there
+  // until the other has gone by, then re-plans the rest of its leg.
+  const pullOver = (y, p) => {
+    const leg = y.legs[y.legIdx];
+    if (!leg || leg.type !== 'walk' || y.state !== 'moving') return false;
+    const lv = nav.levels.get(y.levelId);
+    if (!lv) return false;
+    const g = lv.grid;
+    const others = robots.filter(o => o !== y && o.levelId === y.levelId && o.state !== 'riding' && o.state !== 'stairs' && o.state !== 'done');
+    const paths = others.map(o => {
+      const oLeg = o.legs[o.legIdx];
+      const path = [o.pos];
+      const parked = o.hold && o.hold.parked;
+      if (!parked && o.state === 'moving' && oLeg && oLeg.type === 'walk' && oLeg.points) for (let k = o.ptIdx; k < oLeg.points.length; k++) path.push(oLeg.points[k]);
+      return path;
+    });
+    const segDist = (x, z, a, b) => {
+      const vx = b[0] - a[0], vz = b[2] - a[2];
+      const L2 = vx * vx + vz * vz;
+      const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[2]) * vz) / L2)) : 0;
+      return Math.hypot(x - (a[0] + vx * t), z - (a[2] + vz * t));
+    };
+    const margin = minSep + 0.15;
+    const clearOf = (c) => {
+      for (const o of others) if (Math.hypot(c[0] - o.pos[0], c[2] - o.pos[2]) < margin) return false;
+      for (const path of paths) for (let k = 1; k < path.length; k++) if (segDist(c[0], c[2], path[k - 1], path[k]) < margin) return false;
+      return true;
+    };
+    const ok = (k) => passable(lv.state[k]) && (!lv.fits || lv.fits[k] !== 0);
+    const start = cellIndex(g, y.pos[0], y.pos[2]);
+    if (start < 0) return false;
+    // Breadth-first search outward over free floor, not through the other robot's body.
+    const maxR = Math.ceil(6 / g.res);
+    const si = start % g.w, sj = (start / g.w) | 0;
+    const seen = new Uint8Array(g.w * g.h);
+    const queue = [start];
+    seen[start] = 1;
+    let target = -1;
+    for (let q = 0; q < queue.length; q++) {
+      const k = queue[q];
+      const c = cellCenter(g, k);
+      if (k !== start && (!lv.fits || lv.fits[k] === 15) && clearOf(c)) { target = k; break; }
+      const i = k % g.w, j = (k / g.w) | 0;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ni = i + di, nj = j + dj;
+        if (ni < 0 || nj < 0 || ni >= g.w || nj >= g.h || Math.abs(ni - si) > maxR || Math.abs(nj - sj) > maxR) continue;
+        const nk = nj * g.w + ni;
+        if (seen[nk] || !ok(nk)) continue;
+        seen[nk] = 1;
+        const nc = cellCenter(g, nk);
+        if (Math.hypot(nc[0] - p.pos[0], nc[2] - p.pos[2]) < minSep && p.levelId === y.levelId) continue;
+        queue.push(nk);
+      }
+    }
+    if (target < 0) return false;
+    const tc = cellCenter(g, target);
+    const route = planGridRoute(nav, { levelId: y.levelId, x: y.pos[0], z: y.pos[2] }, { levelId: y.levelId, x: tc[0], z: tc[2] }, {
+      maxExpand: 80000,
+      extraCost: (levelId, cell) => {
+        const q = cellCenter(g, cell);
+        return Math.hypot(q[0] - p.pos[0], q[2] - p.pos[2]) < minSep ? 1000 : 0;
+      },
+    });
+    if (!route || route.legs.length !== 1 || !route.legs[0].points) return false;
+    const end = y.hold && y.hold.leg === leg ? y.hold.end : leg.points[leg.points.length - 1].slice();
+    leg.points = route.legs[0].points.map(q => q.slice());
+    y.ptIdx = 0;
+    y.hold = { leg, end, passerId: p.id, passerDist0: p.stats.dist, until: time + 40, parked: false };
+    yields++;
+    return true;
+  };
+
+  // A robot parked for another carries on once that robot has gone by (or after a time-out).
+  const resumeFromHold = (r) => {
+    const h = r.hold;
+    const p = robots.find(o => o.id === h.passerId);
+    const gone = !p || p.state === 'done' || p.levelId !== r.levelId
+      || (Math.hypot(p.pos[0] - r.pos[0], p.pos[2] - r.pos[2]) > minSep + 1 && p.stats.dist - h.passerDist0 > 1);
+    if (!gone && time < h.until) return false;
+    r.hold = null;
+    const leg = r.legs[r.legIdx];
+    const route = planGridRoute(nav, { levelId: r.levelId, x: r.pos[0], z: r.pos[2] }, { levelId: r.levelId, x: h.end[0], z: h.end[2] }, { maxExpand: 200000 });
+    if (route && route.legs.length === 1 && route.legs[0].points) {
+      leg.points = route.legs[0].points.map(q => q.slice());
+      r.ptIdx = 0;
+      return true;
+    }
+    replan(r, 'pull-over', true);
+    return r.state === 'moving';
   };
 
   const humanEffect = (r) => {
@@ -641,18 +747,37 @@ function createSimulation(ctx, scenario = {}) {
       if (d != null) { replan(r, `closed door (${doorName(d)}) seen ahead`); if (r.state !== 'moving') return; }
     }
     const leg = r.legs[r.legIdx];
+    if (r.hold) {
+      if (r.hold.leg !== leg) r.hold = null; // the leg was re-planned meanwhile
+      else if (r.hold.parked) {
+        if (!resumeFromHold(r)) { r.stats.waitT += dt; return; }
+        if (r.state !== 'moving') return;
+      }
+    }
     let target = leg.points[r.ptIdx];
     let dx = target[0] - r.pos[0], dz = target[2] - r.pos[2];
     let d = Math.hypot(dx, dz);
     while (d < 0.03) {
       r.ptIdx++;
-      if (r.ptIdx >= leg.points.length) { advance(r); return; }
+      if (r.ptIdx >= leg.points.length) {
+        if (r.hold && r.hold.leg === leg) { r.hold.parked = true; r.ptIdx = leg.points.length - 1; return; }
+        advance(r);
+        return;
+      }
       target = leg.points[r.ptIdx];
       dx = target[0] - r.pos[0]; dz = target[2] - r.pos[2];
       d = Math.hypot(dx, dz);
     }
     const ux = dx / d, uz = dz / d;
-    r.heading = Math.atan2(uz, ux);
+    // Differential-drive kinematics: turn towards the next segment at a limited rate, on the
+    // spot when the heading error is large, so the body never swings sideways off the path.
+    const want = Math.atan2(uz, ux);
+    const dh = Math.atan2(Math.sin(want - r.heading), Math.cos(want - r.heading));
+    const maxTurn = turnRate * dt;
+    if (Math.abs(dh) > maxTurn) {
+      r.heading = Math.atan2(Math.sin(r.heading + Math.sign(dh) * maxTurn), Math.cos(r.heading + Math.sign(dh) * maxTurn));
+      if (Math.abs(dh) - maxTurn > TURN_DRIVE_LIMIT) { r.stats.turnT += dt; r.stats.moveT += dt; return; }
+    } else r.heading = want;
     let factor = humanEffect(r);
     if (zones.length) {
       const lvz = nav.levels.get(r.levelId);
@@ -697,9 +822,24 @@ function createSimulation(ctx, scenario = {}) {
         if (r.waitRun > sc.deadlockTime) {
           deadlocks++;
           r.triedDetour = false;
-          r.ghost = 2.5;
           r.waitRun = 0;
-          log('deadlock', `${r.name} and ${blocker.name} blocked each other; ${r.name} was let through`, r);
+          // The robot with the higher number gives way first. One that has pulled over three
+          // times without finishing its leg is not asked again, so a gridlock cannot last.
+          const stuck = (x) => (x.yieldStreak || 0) >= 3;
+          const order = r.id > blocker.id ? [[r, blocker], [blocker, r]] : [[blocker, r], [r, blocker]];
+          const pair = order.find(([y, p]) => y.state === 'moving' && !stuck(y) && pullOver(y, p));
+          if (pair) {
+            const [y, p] = pair;
+            y.waitRun = 0;
+            y.yieldStreak = (y.yieldStreak || 0) + 1;
+            log('yield', `${y.name} pulled over to let ${p.name} pass`, y);
+          } else {
+            // No free floor to pull over into: the last resort lets one robot through, and the
+            // overlap of the two bodies is counted so results do not hide it.
+            r.ghost = 2.5;
+            contacts++;
+            log('deadlock', `${r.name} and ${blocker.name} blocked each other with no room to pull over; ${r.name} was let through (bodies overlap)`, r);
+          }
         }
       }
       return;
@@ -807,6 +947,8 @@ function createSimulation(ctx, scenario = {}) {
           nearMisses: hri.nearMisses,
           minSeparation: Number.isFinite(hri.minSeparation) ? hri.minSeparation : null,
           deadlocks,
+          yields,
+          contacts,
           closePasses: hri.closePasses || 0,
           replans: sum(r => r.stats.replans),
           blockedTime: sum(r => r.stats.blockedT),

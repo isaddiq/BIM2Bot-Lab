@@ -542,14 +542,27 @@
           if (rb.levelId !== level.id || rb.state === "riding") return;
           const [x, y] = toScreen(rb.pos[0], rb.pos[2]);
           ctx.globalAlpha = rb.state === "done" ? 0.4 : 1;
-          const rad = Math.max(5, r * sc);
+          const fp = sim.nav.footprint;
+          const rad = Math.max(5, (fp && fp.rect ? fp.length / 2 : r) * sc);
           ctx.fillStyle = pal[rb.colorIndex] || rb.color;
-          ctx.beginPath();
-          ctx.arc(x, y, rad, 0, Math.PI * 2);
-          ctx.fill();
           ctx.strokeStyle = "#fff";
           ctx.lineWidth = 1.5;
-          ctx.stroke();
+          if (fp && fp.rect) {
+            const hl2 = Math.max(4, fp.length / 2 * sc), hw = Math.max(3, fp.width / 2 * sc);
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(rb.heading);
+            ctx.beginPath();
+            ctx.rect(-hl2, -hw, hl2 * 2, hw * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+          } else {
+            ctx.beginPath();
+            ctx.arc(x, y, rad, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
           ctx.beginPath();
           ctx.moveTo(x, y);
           ctx.lineTo(x + Math.cos(rb.heading) * rad, y + Math.sin(rb.heading) * rad);

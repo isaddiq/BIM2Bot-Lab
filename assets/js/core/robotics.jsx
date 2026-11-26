@@ -175,8 +175,40 @@ function exportRosMaps(navState, opts = {}) {
     goals = followWaypointGoals(o.route, levels);
     goals.forEach(gl => files.push({ name: gl.name, data: gl.data }));
   }
+  files.push({ name: 'nav2_footprint.yaml', data: nav2FootprintYaml(navState) });
   files.push({ name: 'README.txt', data: rosReadme(navState, levels, o, goals) });
   return { files, levels, goals };
+}
+
+/**
+ * Costmap parameters that give Nav2 the same body the browser planner used: a rectangular
+ * footprint (base_link frame, x forward) or a radius, plus clearance as padding and an
+ * inflation radius that covers the keep-away margin.
+ */
+function nav2FootprintYaml(navState) {
+  const r = navState.robot;
+  const fp = navState.footprint || robotFootprint(r);
+  const hl = num(fp.length / 2, 3), hw = num(fp.width / 2, 3);
+  const body = fp.rect
+    ? [`footprint: "[[${hl}, ${hw}], [${hl}, -${hw}], [-${hl}, -${hw}], [-${hl}, ${hw}]]"`, `footprint_padding: ${num(fp.clearance, 3)}`]
+    : [`robot_radius: ${num(fp.inner, 3)}`];
+  const block = (name) => [
+    `${name}:`,
+    `  ${name}:`,
+    '    ros__parameters:',
+    ...body.map(l => `      ${l}`),
+    '      inflation_layer:',
+    `        inflation_radius: ${num(fp.outer + fp.buffer, 3)}`,
+    '        cost_scaling_factor: 3.0',
+  ];
+  return [
+    `# Nav2 costmap body for "${String(r.name).replace(/[^\x20-\x7e]/g, '?')}" exported by BIM2Bot Lab.`,
+    `# ${fp.rect ? `Box ${num(fp.length, 3)} x ${num(fp.width, 3)} m` : `Round, ${num(fp.width, 3)} m wide`}, clearance ${num(fp.clearance, 3)} m, keep-away ${num(fp.buffer, 3)} m.`,
+    '# Merge into your Nav2 params file (keys follow nav2_costmap_2d).',
+    ...block('local_costmap'),
+    ...block('global_costmap'),
+    '',
+  ].join('\n');
 }
 
 /** Map-frame poses with yaw along the path for one drive leg. */
@@ -275,7 +307,8 @@ function rosReadme(navState, levels, o, goals = []) {
     '  254 (white)  free floor and door openings',
     `  205 (grey)   unknown${o.voidAs === 'unknown' ? ': cells without a floor' : ' (not used; cells without a floor are exported as occupied)'}`,
     '',
-    'The map is not inflated. Robot clearance is left to the Nav2 inflation layer.',
+    'The map is not inflated. Robot clearance is left to the Nav2 inflation layer:',
+    'nav2_footprint.yaml holds the robot body, padding and inflation radius used here.',
     'Slow zones are not part of an occupancy map and are not exported.',
     '',
     'Frame: x_map = IFC X and y_map = IFC Y after web-ifc moves the model near the origin.',

@@ -171,6 +171,7 @@ const EXP_METRICS = [
   { id: 'liftWait', label: 'Lift wait', unit: 's', fmt: (v) => fmtSec(v) },
   { id: 'nearMisses', label: 'Near misses', unit: '', fmt: (v) => v.toFixed(1) },
   { id: 'deadlocks', label: 'Deadlocks', unit: '', fmt: (v) => v.toFixed(1) },
+  { id: 'contacts', label: 'Body overlaps', unit: '', fmt: (v) => v.toFixed(1) },
   { id: 'distance', label: 'Distance driven', unit: 'm', fmt: (v) => `${v.toFixed(0)} m` },
   { id: 'replans', label: 'Door re-plans', unit: '', fmt: (v) => v.toFixed(1) },
 ];
@@ -249,7 +250,7 @@ function ExperimentsSection({ model, building, navMap, baseScenario, missionMode
 
   const exportCsv = () => {
     if (!rows.length || !meta) return;
-    const cols = ['tasksDone', 'tasksPlanned', 'makespan', 'throughputPerHour', 'meanTaskTime', 'distance', 'congestionWait', 'liftWait', 'stopForPeople', 'slowForPeople', 'encounters', 'nearMisses', 'minSeparation', 'deadlocks', 'replans', 'blockedTime', 'zoneSlowTime'];
+    const cols = ['tasksDone', 'tasksPlanned', 'makespan', 'throughputPerHour', 'meanTaskTime', 'distance', 'congestionWait', 'liftWait', 'stopForPeople', 'slowForPeople', 'encounters', 'nearMisses', 'minSeparation', 'deadlocks', 'yields', 'contacts', 'replans', 'blockedTime', 'zoneSlowTime'];
     const esc = (v) => (v == null ? '' : typeof v === 'number' ? String(Number(v.toFixed(4))) : `"${String(v).replace(/"/g, '""')}"`);
     const lines = [['model', 'parameter', 'value', 'seed', 'timed_out', ...cols].join(',')];
     rows.forEach(r => lines.push([esc(model.fileName), esc(meta.param), esc(r.value), r.seed, r.totals.timedOut ? 1 : 0, ...cols.map(k => esc(r.totals[k]))].join(',')));

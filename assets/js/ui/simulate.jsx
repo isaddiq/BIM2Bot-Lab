@@ -219,6 +219,19 @@ function useSimulation({ viewerRef, model, building, navMap, theme, levelId, act
         return { time: sim.time, done: sim.done };
       },
       start: (scenario) => { start(scenario); return true; },
+      // Point the camera at a spot (model coordinates), r metres around it.
+      frame: (x, y, z, r = 3) => { viewerRef.current?.frameModelBox({ min: [x - r, y, z - r], max: [x + r, y + 2, z + r] }); return true; },
+      // Body-to-obstacle gap (m) of every robot on the floor at its current pose, for checks.
+      probe: () => {
+        const sim = simRef.current;
+        if (!sim) return null;
+        const nav = sim.nav;
+        return sim.robots.filter(r => r.state !== 'riding' && r.state !== 'stairs' && r.state !== 'done').map(r => {
+          const lv = nav.levels.get(r.levelId);
+          const q = lv ? footprintGap(lv, r.pos[0], r.pos[2], r.heading, nav.footprint) : null;
+          return { id: r.id, levelId: r.levelId, x: r.pos[0], z: r.pos[2], heading: r.heading, state: r.state, ghost: r.ghost > 0, gap: q ? q.gap : null };
+        });
+      },
       // Geometry of one storey (model coordinates), merged per element colour.
       exportLevel: (levelName) => {
         const lv = building && building.levels.find(l => l.name === levelName);
@@ -415,8 +428,7 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
               <span>Robot type</span>
               <select value={sc.robot ? 'navigate' : sc.robotPreset} onChange={e => (e.target.value === 'navigate' ? null : set({ robotPreset: e.target.value, robot: null }))}>
                 {sc.robot && <option value="navigate">{sc.robot.name} ({sc.robot.width} m), from Navigate</option>}
-                {ROBOT_PRESETS.map(p => <option key={p.id} value={p.id}>{p.name} ({p.width} m{p.canUseStairs ? ', stairs' : ''}{p.canUseLifts ? ', lifts' : ''})</option>)}
-              </select>
+                <RobotPresetOptions detail={p => `${p.name} (${p.shape === 'rect' ? `${p.length} × ` : ''}${p.width} m${p.canUseStairs ? ', stairs' : ''}${p.canUseLifts ? ', lifts' : ''})`} />              </select>
             </label>
             <div className="field-grid">
               <label className="field">
@@ -482,6 +494,7 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
                   <Kpi k="Near misses" v={t.nearMisses} tone={t.nearMisses ? 'warn' : null} />
                   <Kpi k="Closest approach" v={t.minSeparation != null ? `${t.minSeparation.toFixed(2)} m` : '—'} />
                   <Kpi k="Deadlocks resolved" v={t.deadlocks} tone={t.deadlocks ? 'warn' : null} />
+                  <Kpi k="Body overlaps" v={t.contacts || 0} tone={t.contacts ? 'warn' : null} />
                   {(t.doorChanges > 0 || t.replans > 0) && <Kpi k="Re-plans for doors" v={t.replans} />}
                   {(t.doorChanges > 0 || t.blockedTime > 0) && <Kpi k="Waiting at closed doors" v={fmtSec(t.blockedTime)} tone={t.blockedTime ? 'warn' : null} />}
                   {t.zonesApplied > 0 && <Kpi k="Slowed in zones" v={fmtSec(t.zoneSlowTime)} />}
@@ -559,7 +572,7 @@ function SimulatePanel({ model, building, navMap, nav, simApi, onSelectIds, onFr
 
 function SimEvents({ sim, onFrameAt }) {
   if (!sim) return null;
-  const kinds = new Set(['near-miss', 'deadlock', 'unreachable', 'door-closed', 'door-opened', 'replan', 'blocked']);
+  const kinds = new Set(['near-miss', 'deadlock', 'yield', 'unreachable', 'door-closed', 'door-opened', 'replan', 'blocked']);
   const list = sim.events.filter(e => kinds.has(e.kind)).slice(-14).reverse();
   return (
     <div className="nav-section">

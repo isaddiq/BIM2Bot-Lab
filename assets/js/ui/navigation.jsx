@@ -6,9 +6,26 @@
 const ROBOT_PRESETS = [
   { id: 'wheeled', name: 'Wheeled indoor robot', width: 0.6, height: 1.4, clearance: 0.05, canUseStairs: false, canUseLifts: true },
   { id: 'compact', name: 'Compact inspection robot', width: 0.45, height: 0.6, clearance: 0.05, canUseStairs: false, canUseLifts: true },
-  { id: 'legged', name: 'Legged robot', width: 0.5, height: 0.7, clearance: 0.05, canUseStairs: true, canUseLifts: false },
-  { id: 'wide', name: 'Hospital logistics cart', width: 0.9, height: 1.6, clearance: 0.05, canUseStairs: false, canUseLifts: true },
+  { id: 'legged', name: 'Legged robot', shape: 'rect', length: 1.0, width: 0.5, height: 0.7, clearance: 0.05, canUseStairs: true, canUseLifts: false },
+  { id: 'wide', name: 'Hospital logistics cart', shape: 'rect', length: 0.9, width: 0.9, height: 1.6, clearance: 0.05, canUseStairs: false, canUseLifts: true },
+  // LionsBot (Singapore) cleaning robots: body length x width x height and weight from the product
+  // pages on lionsbot.com (checked November 2026). Lift riding is a modelling assumption.
+  { id: 'lb-r3vac', maker: 'LionsBot', name: 'LionsBot R3 Vac', shape: 'rect', length: 0.521, width: 0.482, height: 0.655, mass: 53, clearance: 0.05, canUseStairs: false, canUseLifts: true },
+  { id: 'lb-r3scrubpro', maker: 'LionsBot', name: 'LionsBot R3 Scrub Pro', shape: 'rect', length: 0.635, width: 0.57, height: 0.828, mass: 85.5, clearance: 0.05, canUseStairs: false, canUseLifts: true },
+  { id: 'lb-r5', maker: 'LionsBot', name: 'LionsBot R5', shape: 'rect', length: 0.69, width: 0.69, height: 1.125, mass: 200, maxSpeed: 1.1, clearance: 0.05, canUseStairs: false, canUseLifts: true },
+  { id: 'lb-s3', maker: 'LionsBot', name: 'LionsBot S3', shape: 'rect', length: 0.91, width: 0.78, height: 0.48, mass: 80, maxSpeed: 1.2, clearance: 0.05, canUseStairs: false, canUseLifts: true },
 ];
+
+/** Preset options, with the LionsBot models in their own group. */
+function RobotPresetOptions({ detail }) {
+  const label = (p) => (detail ? detail(p) : p.name);
+  return <>
+    {ROBOT_PRESETS.filter(p => !p.maker).map(p => <option key={p.id} value={p.id}>{label(p)}</option>)}
+    <optgroup label="LionsBot (Singapore)">
+      {ROBOT_PRESETS.filter(p => p.maker === 'LionsBot').map(p => <option key={p.id} value={p.id}>{label(p)}</option>)}
+    </optgroup>
+  </>;
+}
 
 const STATUS_LABEL = { pass: 'Pass', warn: 'Warning', fail: 'Blocking', info: 'Note' };
 
@@ -58,7 +75,7 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
             <label className="field">
               <span>Profile</span>
               <select value={presetId} onChange={e => { const p = ROBOT_PRESETS.find(x => x.id === e.target.value); if (p) nav.setRobot({ ...p }); }}>
-                {ROBOT_PRESETS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                <RobotPresetOptions />
                 {presetId === 'custom' && <option value="custom">Custom</option>}
               </select>
             </label>
@@ -66,6 +83,16 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
               <label className="field"><span>Width (m)</span><input type="number" min="0.2" max="2" step="0.05" value={robot.width} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', width: Math.max(0.2, Number(e.target.value) || 0.2) })} /></label>
               <label className="field"><span>Height (m)</span><input type="number" min="0.2" max="2.2" step="0.1" value={robot.height} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', height: Math.min(2.2, Math.max(0.2, Number(e.target.value) || 0.2)) })} /></label>
               <label className="field"><span>Clearance (m)</span><input type="number" min="0" max="0.5" step="0.01" value={robot.clearance} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', clearance: Math.max(0, Number(e.target.value) || 0) })} /></label>
+            </div>
+            <div className="field-grid three">
+              <label className="field"><span>Body shape</span>
+                <select value={robot.shape === 'rect' ? 'rect' : 'round'} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', shape: e.target.value, length: e.target.value === 'rect' ? (robot.length || robot.width) : robot.length })}>
+                  <option value="round">Round</option>
+                  <option value="rect">Box</option>
+                </select>
+              </label>
+              <label className="field"><span>Length (m)</span><input type="number" min="0.2" max="3" step="0.05" disabled={robot.shape !== 'rect'} value={robot.shape === 'rect' ? (robot.length || robot.width) : robot.width} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', length: Math.max(robot.width, Number(e.target.value) || robot.width) })} /></label>
+              <label className="field"><span>Keep-away (m)</span><input type="number" min="0" max="1.5" step="0.05" value={robot.buffer != null ? robot.buffer : 0.25} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', buffer: Math.max(0, Number(e.target.value) || 0) })} /></label>
             </div>
             <div className="toggle-row">
               <label className="check-field"><input type="checkbox" checked={robot.canUseStairs} onChange={e => nav.setRobot({ ...robot, name: 'Custom robot', canUseStairs: e.target.checked })} /> Climbs stairs</label>
@@ -77,7 +104,7 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
                 <InfoTip title="Lift in each stair core">Pretends every stair core also holds a lift, so wheeled robots can change level in models without lifts. Applies to the occupancy-grid planner and the simulation.</InfoTip>
               </div>
             )}
-            <p className="pane-note">Doors need {(robot.width + 2 * robot.clearance).toFixed(2)} m clear width. The robot needs {robot.height.toFixed(1)} m headroom.</p>
+            <p className="pane-note">Doors need {(robot.width + 2 * robot.clearance).toFixed(2)} m clear width. The robot needs {robot.height.toFixed(2)} m headroom{robot.shape === 'rect' ? <>; its {(robot.length || robot.width).toFixed(2)} × {robot.width.toFixed(2)} m body sweeps a {Math.hypot(robot.length || robot.width, robot.width).toFixed(2)} m circle when it turns on the spot</> : null}. Paths try to keep {(robot.buffer != null ? robot.buffer : 0.25).toFixed(2)} m more than the clearance from obstacles.{robot.mass ? ` Weight ${robot.mass} kg.` : ''}</p>
           </div>
 
           <div className="nav-section">
@@ -118,7 +145,7 @@ function NavigatePanel({ model, building, readiness, nav, route, gridRoute, navS
             {nav.hasStart && nav.hasGoal && !grid && (nav.startId && nav.goalId
               ? <GraphRouteCard route={route} nav={nav} onSelectIds={onSelectIds} onFrameRoute={onFrameRoute} />
               : <p className="pane-note">A picked point is outside every room, so the room graph cannot use it. Switch to the occupancy grid.</p>)}
-            {nav.hasStart && nav.hasGoal && grid && <GridRouteCard route={gridRoute} navState={navState} building={building} nav={nav} onFrameRoute={onFrameRoute} />}
+            {nav.hasStart && nav.hasGoal && grid && <GridRouteCard route={gridRoute} navState={navState} building={building} nav={nav} onFrameRoute={onFrameRoute} onSelectIds={onSelectIds} />}
           </div>
 
           <div className="nav-section ros-export">
@@ -253,7 +280,23 @@ function GraphRouteCard({ route, nav, onSelectIds, onFrameRoute }) {
   );
 }
 
-function GridRouteCard({ route, navState, building, nav, onFrameRoute }) {
+/** Closest approach of the robot body along the route, with the element responsible. */
+function ClearanceNote({ clearance: c, navState, onSelectIds }) {
+  const model = navState.navMap.model;
+  const el = c.elementId != null && model ? model.byId.get(c.elementId) : null;
+  const tight = c.gap < c.wanted - 0.02;
+  const lvName = navState.levels.get(c.levelId) ? navState.levels.get(c.levelId).grid.levelName : '';
+  return (
+    <p className="route-clearance" data-tone={tight ? 'warn' : 'ok'}>
+      Closest approach: <span className="mono">{c.gap.toFixed(2)} m</span> from the body to {el
+        ? <button type="button" className="link-btn" onClick={() => onSelectIds && onSelectIds([el.expressId])}>{spaceDisplayName(el)}</button>
+        : <>a {c.what}</>}{el ? ` (${el.ifcClass})` : ''} on {lvName}.
+      {tight ? ` That is less than the ${c.wanted.toFixed(2)} m wanted (clearance plus keep-away); usually a door or a narrow passage leaves no more room there.` : ''}
+    </p>
+  );
+}
+
+function GridRouteCard({ route, navState, building, nav, onFrameRoute, onSelectIds }) {
   if (!navState) return <p className="pane-note"><span className="spinner" /> Building occupancy grids…</p>;
   if (!route) {
     return (
@@ -273,6 +316,7 @@ function GridRouteCard({ route, navState, building, nav, onFrameRoute }) {
         <div><span className="v mono">{changes}</span><span className="k">Level changes</span></div>
         <div><span className="v mono">{route.ms.toFixed(0)} ms</span><span className="k">{route.expanded.toLocaleString()} cells searched</span></div>
       </div>
+      {route.clearance && <ClearanceNote clearance={route.clearance} navState={navState} onSelectIds={onSelectIds} />}
       <ol className="route-steps">
         {route.legs.map((l, i) => (
           <li key={i} data-kind={l.type === 'walk' ? 'space' : 'landing'}>
@@ -286,7 +330,7 @@ function GridRouteCard({ route, navState, building, nav, onFrameRoute }) {
       <div className="route-foot">
         <button type="button" className="btn btn-sm" onClick={onFrameRoute}><Icons.Focus size={14} /> Frame route</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={nav.clearRoute}>Clear</button>
-        <InfoTip title="How this path is planned">8-connected A* without corner cutting, smoothed by line of sight. Cost rises within 0.4 m of the inflation limit to keep the robot mid-corridor{nav.zones.some(z => z.kind === 'slow') ? ', and inside slow zones in proportion to the lower speed' : ''}.</InfoTip>
+        <InfoTip title="How this path is planned">8-connected A* without corner cutting, on cells inflated by half the body width plus clearance. Cost rises inside the keep-away margin, so the robot stays mid-corridor and rounds corners wide{nav.zones.some(z => z.kind === 'slow') ? ', and inside slow zones in proportion to the lower speed' : ''}. Line-of-sight smoothing never brings the path closer to an obstacle than the search left it, and box-shaped robots also check their footprint along each straight run.</InfoTip>
       </div>
       <RouteCompare navState={navState} route={route} from={nav.startPt} to={nav.goalPt} />
     </div>
@@ -648,4 +692,4 @@ function Fact({ k, v, sub }) {
   );
 }
 
-Object.assign(window, { ROBOT_PRESETS, NavigatePanel, IntelligenceDashboard, ReadinessList, StatusIcon, Fact });
+Object.assign(window, { ROBOT_PRESETS, RobotPresetOptions, NavigatePanel, IntelligenceDashboard, ReadinessList, StatusIcon, Fact });

@@ -269,8 +269,14 @@ Each robot profile has its own 3D model in the simulation, coloured per robot. W
 | **Compact inspection robot** | Stacked-plate research platform with a spinning LiDAR | 0.45 m | 0.6 m | — | ✅ |
 | **Legged robot** | Quadruped with a trotting gait | 0.50 m | 0.7 m | ✅ | — |
 | **Hospital logistics cart** | Autonomous base carrying a stainless cabinet | 0.90 m | 1.6 m | — | ✅ |
+| **LionsBot R3 Vac** | Compact vacuum, box body 0.52 × 0.48 m, 53 kg | 0.48 m | 0.66 m | — | ✅ |
+| **LionsBot R3 Scrub Pro** | Compact scrubber with rear squeegee, 0.64 × 0.57 m, 85.5 kg | 0.57 m | 0.83 m | — | ✅ |
+| **LionsBot R5** | Floor scrubber with sensor bar and hose, 0.69 × 0.69 m, 200 kg | 0.69 m | 1.13 m | — | ✅ |
+| **LionsBot S3** | Low, wide sweeper with twin side brushes and a beacon, 0.91 × 0.78 m, 80 kg | 0.78 m | 0.48 m | — | ✅ |
 
-Custom profiles pick the closest model. The models are procedural (Three.js), so the repository needs no third-party 3D assets.
+The LionsBot (Singapore) profiles use the body sizes and weights published on lionsbot.com. Their models are stylised from those sizes: no logos and no official CAD. Lift riding is a modelling assumption. Custom profiles pick the closest model. The models are procedural (Three.js), so the repository needs no third-party 3D assets.
+
+**Bodies, not points.** Box-shaped robots plan with their real footprint. The planner records which of four headings the body fits in at each cell, and it checks turns on the spot at the cells where the path changes direction. Each robot also has a keep-away margin, so paths stay mid-corridor and round corners wide. Smoothing never brings a path closer to an obstacle than the search left it. The route card reports the closest approach and the IFC element responsible. In the simulation, robots turn at a limited rate and keep their footprints apart. When two robots block each other, one pulls over into free floor and lets the other pass. Any overlap of two bodies is counted as a result. The ROS 2 export includes `nav2_footprint.yaml` with the same footprint, padding and inflation radius.
 
 ## Sample models
 

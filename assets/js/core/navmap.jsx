@@ -31,6 +31,7 @@ const CELL_STATES = CELL_LABEL.length;
 const BAND_LOW = 0.1;   // m above floor: ignore floor finishes and thresholds
 const BAND_HIGH = 2.2;  // m above floor: tallest robot considered
 const FLOOR_TOL = 0.35; // m: walkable faces within this distance of the floor height
+const COMFORT_WEIGHT = 1.5; // extra cost factor at the inflation limit, fading to 0 at the preferred margin
 
 // ---------------------------------------------------------------------------
 // Raster helpers
@@ -284,9 +285,28 @@ function triNormalY(p) {
 // ---------------------------------------------------------------------------
 // G4–G5: robot-specific state
 // ---------------------------------------------------------------------------
+/**
+ * Rigid-body footprint of a robot profile. Round robots are a disc of the body width; rectangular
+ * ones (shape 'rect') are length × width boxes that face their direction of travel.
+ *   inner   hard limit: half the width plus clearance (the robot fits wherever this disc fits)
+ *   outer   circumscribed radius plus clearance (what a rectangular body sweeps when it turns in place)
+ *   prefer  extra distance beyond `inner` the planner tries to keep: the corner overhang plus `buffer`
+ */
+function robotFootprint(robot) {
+  const width = robot.width;
+  const rect = robot.shape === 'rect';
+  const length = rect ? Math.max(width, robot.length || width) : width;
+  const clearance = robot.clearance || 0;
+  const inner = width / 2 + clearance;
+  const outer = (rect ? Math.hypot(length, width) / 2 : width / 2) + clearance;
+  const buffer = Math.max(0, robot.buffer != null ? robot.buffer : 0.25);
+  return { rect, length, width, clearance, inner, outer, buffer, prefer: (outer - inner) + buffer };
+}
+
 function applyRobot(navMap, building, robot, opts = {}) {
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  const radius = robot.width / 2 + robot.clearance;
+  const footprint = robotFootprint(robot);
+  const radius = footprint.inner;
   const blocked = opts.blocked || new Set();
   const userObstacles = opts.obstacles || [];
   const zones = opts.zones || [];
@@ -366,10 +386,11 @@ function applyRobot(navMap, building, robot, opts = {}) {
     }
     let free = 0;
     for (let k = 0; k < n; k++) if (state[k] === CELL.FREE || state[k] === CELL.DOOR) free++;
-    levels.set(g.levelId, { grid: g, state, cause, dist, near, slow, freeCells: free });
+    const fits = footprint.rect ? orientationFits(g, state, dist, near, footprint) : null;
+    levels.set(g.levelId, { grid: g, state, cause, dist, near, slow, fits, freeCells: free });
   });
 
-  const state = { navMap, building, robot, radius, levels, blocked, obstacles: userObstacles, zones, stairsAsLifts: !!opts.stairsAsLifts };
+  const state = { navMap, building, robot, radius, footprint, levels, blocked, obstacles: userObstacles, zones, stairsAsLifts: !!opts.stairsAsLifts };
   state.transitions = buildTransitions(state);
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   state.buildMs = t1 - t0;
@@ -394,8 +415,12 @@ function slowFactorAt(lv, idx) {
   return lv.slow && idx >= 0 ? lv.slow[idx] : 1;
 }
 
-/** Nearest traversable cell to (x, z) on a level, searching outward up to maxDist metres. */
+/**
+ * Nearest traversable cell to (x, z) on a level, searching outward up to maxDist metres. For
+ * box-shaped robots only cells where the body fits in at least one orientation count.
+ */
 function nearestFreeCell(lv, x, z, maxDist = 3) {
+  const ok = lv.fits ? (k) => passable(lv.state[k]) && lv.fits[k] !== 0 : (k) => passable(lv.state[k]);
   const g = lv.grid;
   let start = cellIndex(g, x, z);
   if (start < 0) {
@@ -403,7 +428,7 @@ function nearestFreeCell(lv, x, z, maxDist = 3) {
     const j = Math.min(g.h - 1, Math.max(0, Math.floor((z - g.z0) / g.res)));
     start = j * g.w + i;
   }
-  if (passable(lv.state[start])) return start;
+  if (ok(start)) return start;
   const maxR = Math.ceil(maxDist / g.res);
   const si = start % g.w, sj = (start / g.w) | 0;
   for (let r = 1; r <= maxR; r++) {
@@ -413,7 +438,7 @@ function nearestFreeCell(lv, x, z, maxDist = 3) {
       const i = si + di, j = sj + dj;
       if (i < 0 || j < 0 || i >= g.w || j >= g.h) continue;
       const k = j * g.w + i;
-      if (!passable(lv.state[k])) continue;
+      if (!ok(k)) continue;
       const d = di * di + dj * dj;
       if (d < bestD) { bestD = d; best = k; }
     }
@@ -575,6 +600,7 @@ function planGridRoute(state, from, to, opts = {}) {
   const DIRS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
   let expanded = 0;
   const maxExpand = opts.maxExpand || 4e6;
+  const prefer = Math.max(0.05, (state.footprint || robotFootprint(state.robot)).prefer);
   while (heap.size) {
     const node = heap.pop();
     if (closed[node]) continue;
@@ -593,9 +619,26 @@ function planGridRoute(state, from, to, opts = {}) {
       const nc = nj * g.w + ni;
       if (!passable(lv.state[nc])) continue;
       if (di && dj && (!passable(lv.state[j * g.w + ni]) || !passable(lv.state[nj * g.w + i]))) continue;
-      // Prefer the middle of corridors: small penalty within 0.4 m of the inflation limit.
+      // Box-shaped robots: the body must fit, facing the move, in the next cell and (when it
+      // has to turn here) in this one. The start cell is exempt so a robot can always leave it.
+      if (lv.fits) {
+        const o = moveOrientation(di, dj);
+        const bit = 1 << o;
+        if (!(lv.fits[nc] & bit)) continue;
+        if (node !== startNode) {
+          if (!(lv.fits[cell] & bit)) continue;
+          const parent = came[node];
+          if (parent >= 0 && levelOfNode(parent) === lv) {
+            const pc = parent - base;
+            const pi = pc % g.w, pj = (pc - pi) / g.w;
+            if (Math.abs(i - pi) <= 1 && Math.abs(j - pj) <= 1 && !turnFits(lv.fits[cell], moveOrientation(i - pi, j - pj), o)) continue;
+          }
+        }
+      }
+      // Keep a distance from obstacles: cost rises steeply inside the preferred margin beyond the
+      // inflation limit, so paths run mid-corridor and round corners wide instead of grazing them.
       const margin = lv.dist[nc] - state.radius;
-      const comfort = margin < 0.4 ? 1 + (0.4 - Math.max(0, margin)) * 0.75 : 1;
+      const comfort = margin < prefer ? 1 + COMFORT_WEIGHT * (1 - Math.max(0, margin) / prefer) : 1;
       let cost = m * g.res * comfort;
       if (lv.slow) cost /= lv.slow[nc]; // slow zones: cost in time, not distance
       if (extra) cost += extra(g.levelId, nc);
@@ -643,51 +686,212 @@ function planGridRoute(state, from, to, opts = {}) {
   legs.forEach(leg => {
     if (leg.type !== 'walk') { length += leg.transition.dy; return; }
     const lv = state.levels.get(leg.levelId);
-    const kept = smoothCells(lv, leg.cells);
+    const kept = smoothCells(lv, leg.cells, state);
     leg.points = kept.map(c => cellCenter(lv.grid, c));
     if (leg.points.length === 1) leg.points.push(leg.points[0].slice());
     for (let k = 1; k < leg.points.length; k++) length += Math.hypot(leg.points[k][0] - leg.points[k - 1][0], leg.points[k][2] - leg.points[k - 1][2]);
     delete leg.cells;
   });
-  // Snap the first and last points to the requested positions when they are free.
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  return { legs, length, expanded, ms: t1 - t0, startCell: s, goalCell: t };
+  const route = { legs, length, expanded, ms: t1 - t0, startCell: s, goalCell: t };
+  route.clearance = routeClearance(state, route);
+  return route;
 }
 
-// Greedy line-of-sight shortcutting over traversable cells.
-function smoothCells(lv, cells) {
+/**
+ * Greedy line-of-sight shortcutting. A shortcut is taken only if it keeps at least as much
+ * distance from obstacles as the A* cells it replaces (capped at the preferred margin), so
+ * smoothing never pulls the path closer to walls and furniture than the search left it.
+ * Rectangular robots also check their oriented footprint along the shortcut.
+ */
+function smoothCells(lv, cells, state) {
   if (cells.length <= 2) return cells.slice();
+  const fp = state ? (state.footprint || robotFootprint(state.robot)) : null;
+  const keep = fp ? state.radius + fp.prefer : 0;
   const out = [cells[0]];
+  const runMin = new Float32Array(cells.length);
+  const g = lv.grid;
+  const headingTo = (a, b) => { const pa = cellCenter(g, a), pb = cellCenter(g, b); return Math.atan2(pb[2] - pa[2], pb[0] - pa[0]); };
   let anchor = 0;
+  let inHeading = null; // heading the robot arrives at the anchor with
   while (anchor < cells.length - 1) {
+    runMin[anchor] = lv.dist[cells[anchor]];
+    for (let k = anchor + 1; k < cells.length; k++) runMin[k] = Math.min(runMin[k - 1], lv.dist[cells[k]]);
     let far = anchor + 1;
+    const pa = cellCenter(g, cells[anchor]);
     for (let k = cells.length - 1; k > anchor + 1; k--) {
-      if (lineOfSight(lv, cells[anchor], cells[k])) { far = k; break; }
+      const need = fp ? Math.min(keep, runMin[k]) - 1e-4 : 0;
+      if (!lineOfSight(lv, cells[anchor], cells[k], need)) continue;
+      if (fp && fp.rect) {
+        if (!segmentFootprintClear(lv, cells[anchor], cells[k], fp, g.res * 0.5)) continue;
+        if (inHeading != null && !rotationClear(lv, pa[0], pa[2], inHeading, headingTo(cells[anchor], cells[k]), fp, fp.clearance - 1e-3)) continue;
+      }
+      far = k;
+      break;
     }
     out.push(cells[far]);
+    inHeading = headingTo(cells[anchor], cells[far]);
     anchor = far;
   }
   return out;
 }
 
-function lineOfSight(lv, a, b) {
-  const g = lv.grid;
-  let x0 = a % g.w, y0 = (a / g.w) | 0;
-  const x1 = b % g.w, y1 = (b / g.w) | 0;
-  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-  let err = dx - dy;
-  while (true) {
-    if (!passable(lv.state[y0 * g.w + x0])) return false;
-    if (x0 === x1 && y0 === y1) return true;
-    const e2 = 2 * err;
-    if (e2 > -dy && e2 < dx) {
-      // Diagonal step: both side cells must be open (no corner cutting).
-      if (!passable(lv.state[y0 * g.w + x0 + sx]) || !passable(lv.state[(y0 + sy) * g.w + x0])) return false;
-    }
-    if (e2 > -dy) { err -= dy; x0 += sx; }
-    if (e2 < dx) { err += dx; y0 += sy; }
+/**
+ * Visit every cell a segment between two cell centres passes through (supercover: a segment
+ * through a cell corner visits both side cells). Stops early when visit returns false.
+ */
+function forEachLineCell(g, a, b, visit) {
+  let i = a % g.w, j = (a / g.w) | 0;
+  const i1 = b % g.w, j1 = (b / g.w) | 0;
+  const nx = Math.abs(i1 - i), ny = Math.abs(j1 - j);
+  const sx = i1 > i ? 1 : -1, sy = j1 > j ? 1 : -1;
+  if (!visit(j * g.w + i)) return false;
+  for (let ix = 0, iy = 0; ix < nx || iy < ny;) {
+    const decision = (1 + 2 * ix) * ny - (1 + 2 * iy) * nx;
+    if (decision === 0) {
+      if (!visit(j * g.w + i + sx) || !visit((j + sy) * g.w + i)) return false;
+      i += sx; j += sy; ix++; iy++;
+    } else if (decision < 0) { i += sx; ix++; } else { j += sy; iy++; }
+    if (!visit(j * g.w + i)) return false;
   }
+  return true;
+}
+
+/** True when every cell on the segment is traversable and (optionally) at least minDist from an obstacle. */
+function lineOfSight(lv, a, b, minDist = 0) {
+  return forEachLineCell(lv.grid, a, b, (k) => passable(lv.state[k]) && (!minDist || lv.dist[k] >= minDist));
+}
+
+/**
+ * Smallest gap (m) between a robot's body and the nearest hard cell, with the body at (x, z)
+ * facing `heading`. Round bodies use the distance field at the centre; rectangular ones sample
+ * the box outline. Returns { gap, cell } where cell is the hard cell that is nearest.
+ */
+function footprintGap(lv, x, z, heading, fp) {
+  const g = lv.grid;
+  const res = g.res;
+  const probe = (px, pz, inset) => {
+    const idx = cellIndex(g, px, pz);
+    if (idx < 0) return { gap: -inset, cell: -1 };
+    return { gap: lv.dist[idx] - res * 0.5 - inset, cell: lv.near[idx] };
+  };
+  if (!fp.rect) return probe(x, z, fp.width / 2);
+  const c = Math.cos(heading), s = Math.sin(heading);
+  const hl = fp.length / 2, hw = fp.width / 2;
+  let best = { gap: Infinity, cell: -1 };
+  // Walk each edge of the outline from corner to corner (corners included) every third of a cell.
+  const corners = [[hl, -hw], [hl, hw], [-hl, hw], [-hl, -hw]];
+  for (let e = 0; e < 4; e++) {
+    const [u0, v0] = corners[e], [u1, v1] = corners[(e + 1) % 4];
+    const n = Math.max(1, Math.ceil(Math.hypot(u1 - u0, v1 - v0) / (res / 3)));
+    for (let k = 0; k < n; k++) {
+      const u = u0 + ((u1 - u0) * k) / n, v = v0 + ((v1 - v0) * k) / n;
+      const q = probe(x + u * c - v * s, z + u * s + v * c, 0);
+      if (q.gap < best.gap) best = q;
+    }
+  }
+  return best;
+}
+
+/** A box turning on the spot from orientation a to b (45° steps, the short way) fits throughout. */
+function turnFits(bits, a, b) {
+  const d = (b - a + 4) % 4;
+  if (d === 0) return true;
+  if (d === 2) return (bits & (1 << ((a + 1) % 4))) !== 0 || (bits & (1 << ((a + 3) % 4))) !== 0;
+  return (bits & (1 << a)) !== 0 && (bits & (1 << b)) !== 0;
+}
+
+/** A box turning on the spot at (x, z) from heading h0 to h1 (the short way) keeps its clearance. */
+function rotationClear(lv, x, z, h0, h1, fp, need) {
+  const dh = Math.atan2(Math.sin(h1 - h0), Math.cos(h1 - h0));
+  const steps = Math.max(1, Math.ceil(Math.abs(dh) / (Math.PI / 18)));
+  for (let k = 1; k <= steps; k++) if (footprintGap(lv, x, z, h0 + (dh * k) / steps, fp).gap < need) return false;
+  return true;
+}
+
+// Grid move (di, dj) → which of the four body orientations (0°, 45°, 90°, 135°) it drives in.
+// A box is symmetric under a half turn, so opposite moves share an orientation.
+function moveOrientation(di, dj) {
+  if (!dj) return 0;
+  if (!di) return 2;
+  return di === dj ? 1 : 3;
+}
+
+/**
+ * For box-shaped robots: per cell, a bit for each of the four grid orientations in which the
+ * whole body fits with its clearance (bit o = heading o × 45°). Cells far enough from every
+ * obstacle that any orientation fits get all four bits without sampling the outline.
+ */
+function orientationFits(g, state, dist, near, fp) {
+  const n = g.w * g.h;
+  const fits = new Uint8Array(n);
+  const lvTmp = { grid: g, dist, near };
+  const safe = fp.outer + g.res * 0.5;
+  for (let k = 0; k < n; k++) {
+    if (!passable(state[k])) continue;
+    if (dist[k] >= safe) { fits[k] = 15; continue; }
+    const c = cellCenter(g, k);
+    let bits = 0;
+    for (let o = 0; o < 4; o++) {
+      if (footprintGap(lvTmp, c[0], c[2], (o * Math.PI) / 4, fp).gap >= fp.clearance - 1e-3) bits |= 1 << o;
+    }
+    fits[k] = bits;
+  }
+  return fits;
+}
+
+/**
+ * A rectangular body driving straight from cell a to cell b keeps its clearance (plus `pad`,
+ * which absorbs the grid's own half-cell uncertainty on long shortcuts) everywhere.
+ */
+function segmentFootprintClear(lv, a, b, fp, pad = 0) {
+  const pa = cellCenter(lv.grid, a), pb = cellCenter(lv.grid, b);
+  const dx = pb[0] - pa[0], dz = pb[2] - pa[2];
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return true;
+  const heading = Math.atan2(dz, dx);
+  const steps = Math.max(1, Math.ceil(len / (lv.grid.res * 0.25)));
+  for (let k = 0; k <= steps; k++) {
+    const t = k / steps;
+    if (footprintGap(lv, pa[0] + dx * t, pa[2] + dz * t, heading, fp).gap < fp.clearance + pad - 1e-3) return false;
+  }
+  return true;
+}
+
+/**
+ * Closest approach of the robot body along a planned route, traced to the IFC element (or
+ * floor edge, door or what-if obstacle) responsible. Samples each walk leg every half cell
+ * with the body facing along the leg.
+ */
+function routeClearance(state, route) {
+  const fp = state.footprint || robotFootprint(state.robot);
+  let best = null;
+  route.legs.forEach(leg => {
+    if (leg.type !== 'walk' || !leg.points) return;
+    const lv = state.levels.get(leg.levelId);
+    if (!lv) return;
+    const step = lv.grid.res * 0.5;
+    for (let k = 1; k < leg.points.length; k++) {
+      const p0 = leg.points[k - 1], p1 = leg.points[k];
+      const dx = p1[0] - p0[0], dz = p1[2] - p0[2];
+      const len = Math.hypot(dx, dz);
+      if (len < 1e-6) continue;
+      const heading = Math.atan2(dz, dx);
+      const n = Math.max(1, Math.ceil(len / step));
+      for (let s = 0; s <= n; s++) {
+        const x = p0[0] + (dx * s) / n, z = p0[2] + (dz * s) / n;
+        const q = footprintGap(lv, x, z, heading, fp);
+        if (!best || q.gap < best.gap) best = { gap: q.gap, cell: q.cell, levelId: leg.levelId, point: [x, lv.grid.floorY, z] };
+      }
+    }
+  });
+  if (!best) return null;
+  const lv = state.levels.get(best.levelId);
+  const src = best.cell;
+  const st = src >= 0 ? lv.state[src] : -1;
+  const elementId = st === CELL.OBSTACLE || st === CELL.BLOCKED ? lv.cause[src] : null;
+  const what = st === CELL.VOID ? 'floor edge' : st === CELL.USER ? 'what-if obstacle' : st === CELL.BLOCKED ? 'blocked door' : st === CELL.ZONE ? 'no-go zone' : 'obstacle';
+  return { gap: Math.max(0, best.gap), levelId: best.levelId, point: best.point, elementId, what, wanted: fp.clearance + fp.buffer };
 }
 
 // ---------------------------------------------------------------------------
@@ -813,4 +1017,5 @@ Object.assign(window, {
   GRID_STEPS, CELL, CELL_LABEL, CELL_STATES,
   buildNavMap, applyRobot, planGridRoute, explainCell, nearestFreeCell, levelAtHeight, navMapSummary, gridReachability, cellIndex, cellCenter,
   passable, forEachZoneCell, slowFactorAt, lineOfSight,
+  robotFootprint, footprintGap, routeClearance,
 });

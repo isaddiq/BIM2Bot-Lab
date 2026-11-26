@@ -1466,7 +1466,7 @@ function App() {
     if (building && workspace !== 'explore' && (startPt || goalPt || missions.length || pendingMission)) {
       v.setOverlay('nav-marks', buildMarkersOverlay({ building, theme, start: navigating ? startPt : null, goal: navigating ? goalPt : null, missions: workspace === 'simulate' ? missions : [], missionPaths: workspace === 'simulate' ? missionPaths : [], pending: workspace === 'simulate' ? pendingMission : null }));
     } else v.removeOverlay('nav-marks');
-    const shown = planner === 'grid' ? (gridRoute ? buildGridRouteOverlay(gridRoute, { theme }) : null) : (routeResult ? buildRouteOverlay(routeResult, { theme }) : null);
+    const shown = planner === 'grid' ? (gridRoute ? buildGridRouteOverlay(gridRoute, { theme, footprint: navState ? navState.footprint : null }) : null) : (routeResult ? buildRouteOverlay(routeResult, { theme }) : null);
     if (navigating && shown) v.setOverlay('nav-route', shown);
     else v.removeOverlay('nav-route');
   }, [workspace, building, showGraph, theme, blocked, robot, levelId, routeResult, gridRoute, planner, navState, showGrid, clickMode, startPt, goalPt, missions, missionPaths, pendingMission]);

@@ -13,6 +13,7 @@
   const BAND_LOW = 0.1;
   const BAND_HIGH = 2.2;
   const FLOOR_TOL = 0.35;
+  const COMFORT_WEIGHT = 1.5;
   function makeGrid(level, bounds, res) {
     const w = Math.max(1, Math.ceil((bounds.max[0] - bounds.min[0]) / res));
     const h = Math.max(1, Math.ceil((bounds.max[2] - bounds.min[2]) / res));
@@ -251,9 +252,20 @@
     const len = Math.hypot(nx, ny, nz);
     return len ? ny / len : 0;
   }
+  function robotFootprint(robot) {
+    const width = robot.width;
+    const rect = robot.shape === "rect";
+    const length = rect ? Math.max(width, robot.length || width) : width;
+    const clearance = robot.clearance || 0;
+    const inner = width / 2 + clearance;
+    const outer = (rect ? Math.hypot(length, width) / 2 : width / 2) + clearance;
+    const buffer = Math.max(0, robot.buffer != null ? robot.buffer : 0.25);
+    return { rect, length, width, clearance, inner, outer, buffer, prefer: outer - inner + buffer };
+  }
   function applyRobot(navMap, building, robot, opts = {}) {
     const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const radius = robot.width / 2 + robot.clearance;
+    const footprint = robotFootprint(robot);
+    const radius = footprint.inner;
     const blocked = opts.blocked || /* @__PURE__ */ new Set();
     const userObstacles = opts.obstacles || [];
     const zones = opts.zones || [];
@@ -357,9 +369,10 @@
       }
       let free = 0;
       for (let k = 0; k < n; k++) if (state2[k] === CELL.FREE || state2[k] === CELL.DOOR) free++;
-      levels.set(g.levelId, { grid: g, state: state2, cause, dist, near, slow, freeCells: free });
+      const fits = footprint.rect ? orientationFits(g, state2, dist, near, footprint) : null;
+      levels.set(g.levelId, { grid: g, state: state2, cause, dist, near, slow, fits, freeCells: free });
     });
-    const state = { navMap, building, robot, radius, levels, blocked, obstacles: userObstacles, zones, stairsAsLifts: !!opts.stairsAsLifts };
+    const state = { navMap, building, robot, radius, footprint, levels, blocked, obstacles: userObstacles, zones, stairsAsLifts: !!opts.stairsAsLifts };
     state.transitions = buildTransitions(state);
     const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
     state.buildMs = t1 - t0;
@@ -379,6 +392,7 @@
     return lv.slow && idx >= 0 ? lv.slow[idx] : 1;
   }
   function nearestFreeCell(lv, x, z, maxDist = 3) {
+    const ok = lv.fits ? (k) => passable(lv.state[k]) && lv.fits[k] !== 0 : (k) => passable(lv.state[k]);
     const g = lv.grid;
     let start = cellIndex(g, x, z);
     if (start < 0) {
@@ -386,7 +400,7 @@
       const j = Math.min(g.h - 1, Math.max(0, Math.floor((z - g.z0) / g.res)));
       start = j * g.w + i;
     }
-    if (passable(lv.state[start])) return start;
+    if (ok(start)) return start;
     const maxR = Math.ceil(maxDist / g.res);
     const si = start % g.w, sj = start / g.w | 0;
     for (let r = 1; r <= maxR; r++) {
@@ -396,7 +410,7 @@
         const i = si + di, j = sj + dj;
         if (i < 0 || j < 0 || i >= g.w || j >= g.h) continue;
         const k = j * g.w + i;
-        if (!passable(lv.state[k])) continue;
+        if (!ok(k)) continue;
         const d = di * di + dj * dj;
         if (d < bestD) {
           bestD = d;
@@ -557,6 +571,7 @@
     const DIRS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
     let expanded = 0;
     const maxExpand = opts.maxExpand || 4e6;
+    const prefer = Math.max(0.05, (state.footprint || robotFootprint(state.robot)).prefer);
     while (heap.size) {
       const node = heap.pop();
       if (closed[node]) continue;
@@ -575,8 +590,22 @@
         const nc = nj * g.w + ni;
         if (!passable(lv.state[nc])) continue;
         if (di && dj && (!passable(lv.state[j * g.w + ni]) || !passable(lv.state[nj * g.w + i]))) continue;
+        if (lv.fits) {
+          const o = moveOrientation(di, dj);
+          const bit = 1 << o;
+          if (!(lv.fits[nc] & bit)) continue;
+          if (node !== startNode) {
+            if (!(lv.fits[cell] & bit)) continue;
+            const parent = came[node];
+            if (parent >= 0 && levelOfNode(parent) === lv) {
+              const pc = parent - base;
+              const pi = pc % g.w, pj = (pc - pi) / g.w;
+              if (Math.abs(i - pi) <= 1 && Math.abs(j - pj) <= 1 && !turnFits(lv.fits[cell], moveOrientation(i - pi, j - pj), o)) continue;
+            }
+          }
+        }
         const margin = lv.dist[nc] - state.radius;
-        const comfort = margin < 0.4 ? 1 + (0.4 - Math.max(0, margin)) * 0.75 : 1;
+        const comfort = margin < prefer ? 1 + COMFORT_WEIGHT * (1 - Math.max(0, margin) / prefer) : 1;
         let cost = m * g.res * comfort;
         if (lv.slow) cost /= lv.slow[nc];
         if (extra) cost += extra(g.levelId, nc);
@@ -631,55 +660,182 @@
         return;
       }
       const lv = state.levels.get(leg.levelId);
-      const kept = smoothCells(lv, leg.cells);
+      const kept = smoothCells(lv, leg.cells, state);
       leg.points = kept.map((c) => cellCenter(lv.grid, c));
       if (leg.points.length === 1) leg.points.push(leg.points[0].slice());
       for (let k = 1; k < leg.points.length; k++) length += Math.hypot(leg.points[k][0] - leg.points[k - 1][0], leg.points[k][2] - leg.points[k - 1][2]);
       delete leg.cells;
     });
     const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
-    return { legs, length, expanded, ms: t1 - t0, startCell: s, goalCell: t };
+    const route = { legs, length, expanded, ms: t1 - t0, startCell: s, goalCell: t };
+    route.clearance = routeClearance(state, route);
+    return route;
   }
-  function smoothCells(lv, cells) {
+  function smoothCells(lv, cells, state) {
     if (cells.length <= 2) return cells.slice();
+    const fp = state ? state.footprint || robotFootprint(state.robot) : null;
+    const keep = fp ? state.radius + fp.prefer : 0;
     const out = [cells[0]];
+    const runMin = new Float32Array(cells.length);
+    const g = lv.grid;
+    const headingTo = (a, b) => {
+      const pa = cellCenter(g, a), pb = cellCenter(g, b);
+      return Math.atan2(pb[2] - pa[2], pb[0] - pa[0]);
+    };
     let anchor = 0;
+    let inHeading = null;
     while (anchor < cells.length - 1) {
+      runMin[anchor] = lv.dist[cells[anchor]];
+      for (let k = anchor + 1; k < cells.length; k++) runMin[k] = Math.min(runMin[k - 1], lv.dist[cells[k]]);
       let far = anchor + 1;
+      const pa = cellCenter(g, cells[anchor]);
       for (let k = cells.length - 1; k > anchor + 1; k--) {
-        if (lineOfSight(lv, cells[anchor], cells[k])) {
-          far = k;
-          break;
+        const need = fp ? Math.min(keep, runMin[k]) - 1e-4 : 0;
+        if (!lineOfSight(lv, cells[anchor], cells[k], need)) continue;
+        if (fp && fp.rect) {
+          if (!segmentFootprintClear(lv, cells[anchor], cells[k], fp, g.res * 0.5)) continue;
+          if (inHeading != null && !rotationClear(lv, pa[0], pa[2], inHeading, headingTo(cells[anchor], cells[k]), fp, fp.clearance - 1e-3)) continue;
         }
+        far = k;
+        break;
       }
       out.push(cells[far]);
+      inHeading = headingTo(cells[anchor], cells[far]);
       anchor = far;
     }
     return out;
   }
-  function lineOfSight(lv, a, b) {
+  function forEachLineCell(g, a, b, visit) {
+    let i = a % g.w, j = a / g.w | 0;
+    const i1 = b % g.w, j1 = b / g.w | 0;
+    const nx = Math.abs(i1 - i), ny = Math.abs(j1 - j);
+    const sx = i1 > i ? 1 : -1, sy = j1 > j ? 1 : -1;
+    if (!visit(j * g.w + i)) return false;
+    for (let ix = 0, iy = 0; ix < nx || iy < ny; ) {
+      const decision = (1 + 2 * ix) * ny - (1 + 2 * iy) * nx;
+      if (decision === 0) {
+        if (!visit(j * g.w + i + sx) || !visit((j + sy) * g.w + i)) return false;
+        i += sx;
+        j += sy;
+        ix++;
+        iy++;
+      } else if (decision < 0) {
+        i += sx;
+        ix++;
+      } else {
+        j += sy;
+        iy++;
+      }
+      if (!visit(j * g.w + i)) return false;
+    }
+    return true;
+  }
+  function lineOfSight(lv, a, b, minDist = 0) {
+    return forEachLineCell(lv.grid, a, b, (k) => passable(lv.state[k]) && (!minDist || lv.dist[k] >= minDist));
+  }
+  function footprintGap(lv, x, z, heading, fp) {
     const g = lv.grid;
-    let x0 = a % g.w, y0 = a / g.w | 0;
-    const x1 = b % g.w, y1 = b / g.w | 0;
-    const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
-    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-    let err = dx - dy;
-    while (true) {
-      if (!passable(lv.state[y0 * g.w + x0])) return false;
-      if (x0 === x1 && y0 === y1) return true;
-      const e2 = 2 * err;
-      if (e2 > -dy && e2 < dx) {
-        if (!passable(lv.state[y0 * g.w + x0 + sx]) || !passable(lv.state[(y0 + sy) * g.w + x0])) return false;
-      }
-      if (e2 > -dy) {
-        err -= dy;
-        x0 += sx;
-      }
-      if (e2 < dx) {
-        err += dx;
-        y0 += sy;
+    const res = g.res;
+    const probe = (px, pz, inset) => {
+      const idx = cellIndex(g, px, pz);
+      if (idx < 0) return { gap: -inset, cell: -1 };
+      return { gap: lv.dist[idx] - res * 0.5 - inset, cell: lv.near[idx] };
+    };
+    if (!fp.rect) return probe(x, z, fp.width / 2);
+    const c = Math.cos(heading), s = Math.sin(heading);
+    const hl = fp.length / 2, hw = fp.width / 2;
+    let best = { gap: Infinity, cell: -1 };
+    const corners = [[hl, -hw], [hl, hw], [-hl, hw], [-hl, -hw]];
+    for (let e = 0; e < 4; e++) {
+      const [u0, v0] = corners[e], [u1, v1] = corners[(e + 1) % 4];
+      const n = Math.max(1, Math.ceil(Math.hypot(u1 - u0, v1 - v0) / (res / 3)));
+      for (let k = 0; k < n; k++) {
+        const u = u0 + (u1 - u0) * k / n, v = v0 + (v1 - v0) * k / n;
+        const q = probe(x + u * c - v * s, z + u * s + v * c, 0);
+        if (q.gap < best.gap) best = q;
       }
     }
+    return best;
+  }
+  function turnFits(bits, a, b) {
+    const d = (b - a + 4) % 4;
+    if (d === 0) return true;
+    if (d === 2) return (bits & 1 << (a + 1) % 4) !== 0 || (bits & 1 << (a + 3) % 4) !== 0;
+    return (bits & 1 << a) !== 0 && (bits & 1 << b) !== 0;
+  }
+  function rotationClear(lv, x, z, h0, h1, fp, need) {
+    const dh = Math.atan2(Math.sin(h1 - h0), Math.cos(h1 - h0));
+    const steps = Math.max(1, Math.ceil(Math.abs(dh) / (Math.PI / 18)));
+    for (let k = 1; k <= steps; k++) if (footprintGap(lv, x, z, h0 + dh * k / steps, fp).gap < need) return false;
+    return true;
+  }
+  function moveOrientation(di, dj) {
+    if (!dj) return 0;
+    if (!di) return 2;
+    return di === dj ? 1 : 3;
+  }
+  function orientationFits(g, state, dist, near, fp) {
+    const n = g.w * g.h;
+    const fits = new Uint8Array(n);
+    const lvTmp = { grid: g, dist, near };
+    const safe = fp.outer + g.res * 0.5;
+    for (let k = 0; k < n; k++) {
+      if (!passable(state[k])) continue;
+      if (dist[k] >= safe) {
+        fits[k] = 15;
+        continue;
+      }
+      const c = cellCenter(g, k);
+      let bits = 0;
+      for (let o = 0; o < 4; o++) {
+        if (footprintGap(lvTmp, c[0], c[2], o * Math.PI / 4, fp).gap >= fp.clearance - 1e-3) bits |= 1 << o;
+      }
+      fits[k] = bits;
+    }
+    return fits;
+  }
+  function segmentFootprintClear(lv, a, b, fp, pad = 0) {
+    const pa = cellCenter(lv.grid, a), pb = cellCenter(lv.grid, b);
+    const dx = pb[0] - pa[0], dz = pb[2] - pa[2];
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-6) return true;
+    const heading = Math.atan2(dz, dx);
+    const steps = Math.max(1, Math.ceil(len / (lv.grid.res * 0.25)));
+    for (let k = 0; k <= steps; k++) {
+      const t = k / steps;
+      if (footprintGap(lv, pa[0] + dx * t, pa[2] + dz * t, heading, fp).gap < fp.clearance + pad - 1e-3) return false;
+    }
+    return true;
+  }
+  function routeClearance(state, route) {
+    const fp = state.footprint || robotFootprint(state.robot);
+    let best = null;
+    route.legs.forEach((leg) => {
+      if (leg.type !== "walk" || !leg.points) return;
+      const lv2 = state.levels.get(leg.levelId);
+      if (!lv2) return;
+      const step = lv2.grid.res * 0.5;
+      for (let k = 1; k < leg.points.length; k++) {
+        const p0 = leg.points[k - 1], p1 = leg.points[k];
+        const dx = p1[0] - p0[0], dz = p1[2] - p0[2];
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-6) continue;
+        const heading = Math.atan2(dz, dx);
+        const n = Math.max(1, Math.ceil(len / step));
+        for (let s = 0; s <= n; s++) {
+          const x = p0[0] + dx * s / n, z = p0[2] + dz * s / n;
+          const q = footprintGap(lv2, x, z, heading, fp);
+          if (!best || q.gap < best.gap) best = { gap: q.gap, cell: q.cell, levelId: leg.levelId, point: [x, lv2.grid.floorY, z] };
+        }
+      }
+    });
+    if (!best) return null;
+    const lv = state.levels.get(best.levelId);
+    const src = best.cell;
+    const st = src >= 0 ? lv.state[src] : -1;
+    const elementId = st === CELL.OBSTACLE || st === CELL.BLOCKED ? lv.cause[src] : null;
+    const what = st === CELL.VOID ? "floor edge" : st === CELL.USER ? "what-if obstacle" : st === CELL.BLOCKED ? "blocked door" : st === CELL.ZONE ? "no-go zone" : "obstacle";
+    return { gap: Math.max(0, best.gap), levelId: best.levelId, point: best.point, elementId, what, wanted: fp.clearance + fp.buffer };
   }
   function explainCell(state, levelId, x, z) {
     const lv = state.levels.get(levelId);
@@ -821,6 +977,9 @@
     passable,
     forEachZoneCell,
     slowFactorAt,
-    lineOfSight
+    lineOfSight,
+    robotFootprint,
+    footprintGap,
+    routeClearance
   });
 })();
